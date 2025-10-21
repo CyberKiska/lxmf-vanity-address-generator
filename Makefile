@@ -2,32 +2,32 @@
 
 # Build the binary
 build:
-	go build -o reticulum-vanity .
+	go build -o lxmf-vanity .
 
 # Build for multiple platforms
 build-all:
-	GOOS=linux GOARCH=amd64 go build -o reticulum-vanity-linux-amd64 .
-	GOOS=linux GOARCH=arm64 go build -o reticulum-vanity-linux-arm64 .
-	GOOS=darwin GOARCH=amd64 go build -o reticulum-vanity-darwin-amd64 .
-	GOOS=darwin GOARCH=arm64 go build -o reticulum-vanity-darwin-arm64 .
-	GOOS=windows GOARCH=amd64 go build -o reticulum-vanity-windows-amd64.exe .
+	GOOS=linux GOARCH=amd64 go build -o lxmf-vanity-linux-amd64 .
+	GOOS=linux GOARCH=arm64 go build -o lxmf-vanity-linux-arm64 .
+	GOOS=darwin GOARCH=amd64 go build -o lxmf-vanity-darwin-amd64 .
+	GOOS=darwin GOARCH=arm64 go build -o lxmf-vanity-darwin-arm64 .
+	GOOS=windows GOARCH=amd64 go build -o lxmf-vanity-windows-amd64.exe .
 
 # Clean build artifacts
 clean:
-	rm -f reticulum-vanity reticulum-vanity-* identity identity.txt test_identity*
+	rm -f lxmf-vanity lxmf-vanity-* identity identity.txt test_identity*
 
 # Run quick tests
 test:
 	@echo "Testing with prefix 'ff'..."
-	./reticulum-vanity --prefix ff --dry-run
+	./lxmf-vanity --prefix ff --dry-run
 	@echo "\nTesting with postfix '99'..."
-	./reticulum-vanity --postfix 99 --dry-run
+	./lxmf-vanity --postfix 99 --dry-run
 	@echo "\nTesting with both prefix 'a' and postfix 'b'..."
-	./reticulum-vanity --prefix a --postfix b --dry-run
+	./lxmf-vanity --prefix a --postfix b --dry-run
 
 # Install to system
 install: build
-	cp reticulum-vanity /usr/local/bin/
+	cp lxmf-vanity /usr/local/bin/
 
 # Download dependencies
 deps:

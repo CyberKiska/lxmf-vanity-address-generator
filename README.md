@@ -1,4 +1,4 @@
-# Reticulum LXMF Vanity Address Generator
+# LXMF Vanity Address Generator
 
 A cross-platform multi-threaded CLI tool for generating vanity LXMF addresses in the Reticulum network with a specified prefix and/or suffix.
 
@@ -86,6 +86,9 @@ The program creates two files:
    - Identity hash
    - Public keys (X25519 + Ed25519)
    - Private keys (X25519 + Ed25519)
+   - Base64 import format
+   - Base32 import format
+
 
 ## Verification
 
@@ -200,13 +203,23 @@ python3 verify.py test_id
 ## Frequently Asked Questions
 
 **Q: How long does it take to find an address with a long prefix?**
+
 A: See [PERFORMANCE.md](PERFORMANCE.md) for time estimates.
 
+
 **Q: Is it compatible with official Reticulum?**
+
 A: Yes, compatible. Verify with `rnid -i <file> -H lxmf.delivery`. But if you want an implementation based on the reference RNS python implementation, check out the repository [lxmf-vanity-address-generator-py](https://github.com/CyberKiska/lxmf-vanity-address-generator-py).
 
+
 **Q: Can I find an address with both prefix and suffix?**
+
 A: Yes, use `--prefix` and `--postfix` simultaneously. Search time will increase.
+
+
+**Q: What characters can be used in an address?**
+
+A: Address is matched on lowercase hex of the 16-byte destination hash. So use [Hexspeak](https://en.wikipedia.org/wiki/Hexspeak) to select the prefix/postfix.
 
 ## Acknowledgments
 

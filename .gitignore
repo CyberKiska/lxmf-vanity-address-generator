@@ -1,0 +1,30 @@
+# Binaries
+reticulum-vanity
+reticulum-vanity.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+identity
+identity.*
+test_identity*
+
+# Go build artifacts
+*.test
+*.out
+*.prof
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+path/
