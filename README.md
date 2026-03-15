@@ -71,6 +71,8 @@ go build -o lxmf-vanity .
 - `--out <path>` - path to save the identity file (default "identity")
 - `--dry-run` - speed measurement mode only, no saving
 
+If `--dry-run` is not used, the program checks before generation starts that neither `<out>` nor `<out>.txt` already exists.
+
 ## Output File Format
 
 The program creates two files:
@@ -85,9 +87,12 @@ The program creates two files:
    - LXMF address
    - Identity hash
    - Public keys (X25519 + Ed25519)
-   - Private keys (X25519 + Ed25519)
-   - Base64 import format
-   - Base32 import format
+   - Full destination specifier
+   - URL-safe Base64 import string
+   - Base32 import string
+   - Verification command reference
+
+   This file is sensitive, since the import strings encode the same private identity bytes as `<out>`.
 
 
 ## Verification
@@ -99,7 +104,7 @@ The project includes multiple verification scripts for different use cases:
 The **`verify.py`** script combines the best of both worlds:
 
 ```bash
-# Basic verification with .txt file comparison
+# Verify binary compatibility and any .txt metadata
 python3 verify.py <identity_file>
 
 # Install required dependencies
@@ -107,7 +112,7 @@ pip install cryptography rns
 
 # The script will:
 # ✅ Check file size (64 bytes)
-# ✅ Compare with .txt file if available
+# ✅ Compare with .txt file metadata if available
 # ✅ Verify cryptographic compatibility with Reticulum
 # ✅ Show detailed results
 ```

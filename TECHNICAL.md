@@ -248,27 +248,31 @@ This matches the format produced by `RNS.Identity.to_file()` and can be loaded w
 
 ### Text Format (.txt)
 
-Human-readable hex encoding with all derived information:
+Human-readable metadata plus optional import encodings of the same private identity bytes:
 ```
 LXMF Vanity Address Identity
 ============================
 
 Address (LXMF): cafe61fa1df484eb57c3e37ef5928a3c
 Identity Hash:  9f6813ed6789431163283575125249a8
+Full Specifier: lxmf.delivery.9f6813ed6789431163283575125249a8:cafe61fa1df484eb57c3e37ef5928a3c
 
 Public Key (X25519 + Ed25519):
   X25519 Public:  <pub>
   Ed25519 Public: <pub>
+  Combined:       <pub>
 
-Private Key (X25519 + Ed25519):
-  X25519 Private: <private>
-  Ed25519 Seed:   <seed>
+Import formats for the same private identity bytes (keep this file secret):
+  Base64 (MeshChat / Reticulum urlsafe):
+  <b64url>
+  Base32 (Sideband / Reticulum):
+  <b32>
 
---- Import formats ---
-Base64 (MeshChat import string):
-<b64>
-Base32 (Sideband import string):
-<b32>
+Reticulum-compatible private key material is also stored in:
+  <out>
+
+Verify with:
+  rnid -i <out> -H lxmf.delivery
 
 ```
 
@@ -286,7 +290,7 @@ Reticulum (Python) uses:
 To verify compatibility:
 ```bash
 # Generate identity
-./reticulum-vanity --prefix test --out my_identity
+./lxmf-vanity --prefix test --out my_identity
 
 # Verify with Reticulum (requires: pip install rns)
 rnid -i my_identity -H lxmf.delivery
@@ -299,18 +303,16 @@ The output hash should match the address in `my_identity.txt`.
 ### Randomness Source
 
 Uses `crypto/rand` which provides:
-- Cryptographically secure random numbers (CSPRNG)
-- Platform-specific entropy sources:
-  - Linux: `/dev/urandom`
-  - macOS: `arc4random`
-  - Windows: `CryptGenRandom`
+- Cryptographically secure random numbers from the host platform CSPRNG through Go's standard library
+- No fallback to a non-cryptographic PRNG in the hot loop
 
 ### Key Clamping
 
 Clamping ensures:
-- Proper scalar range for curve operations
-- Protection against timing attacks
-- Conformance with RFC 7748 (X25519) and RFC 8032 (Ed25519)
+- Proper scalar range for X25519 curve operations
+- Conformance with RFC 7748 for the X25519 private scalar and RFC 8032 for the Ed25519.
+
+Ed25519 secret expansion and public-key derivation are delegated to Go's `crypto/ed25519` implementation.
 
 ### Hash Truncation
 

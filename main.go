@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -18,6 +19,8 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 )
+
+const addressHexLength = 32
 
 // CLI flags
 var (
@@ -66,6 +69,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	if !dryRun {
+		if err := validateOutputTarget(outPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	prefix = strings.ToLower(prefix)
 	postfix = strings.ToLower(postfix)
@@ -95,16 +104,23 @@ func main() {
 	go monitorProgress()
 
 	resultChan := make(chan *Identity, 1)
+	errChan := make(chan error, 1)
 	var wg sync.WaitGroup
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go worker(&wg, resultChan)
+		go worker(&wg, resultChan, errChan)
 	}
 
-	// Wait for result and stop workers
-	identity := <-resultChan
-	atomic.StoreUint32(&found, 1)
+	var identity *Identity
+	select {
+	case identity = <-resultChan:
+	case err := <-errChan:
+		atomic.StoreUint32(&found, 1)
+		wg.Wait()
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	wg.Wait()
 
@@ -125,7 +141,7 @@ func main() {
 func validateInputs() error {
 	// Validate prefix
 	if prefix != "" {
-		if len(prefix) > 32 {
+		if len(prefix) > addressHexLength {
 			return fmt.Errorf("prefix must be 1-32 hex characters")
 		}
 		if !isHex(prefix) {
@@ -135,7 +151,7 @@ func validateInputs() error {
 
 	// Validate postfix
 	if postfix != "" {
-		if len(postfix) > 32 {
+		if len(postfix) > addressHexLength {
 			return fmt.Errorf("postfix must be 1-32 hex characters")
 		}
 		if !isHex(postfix) {
@@ -151,6 +167,10 @@ func validateInputs() error {
 		return fmt.Errorf("workers must be at least 1")
 	}
 
+	if len(prefix)+len(postfix) > addressHexLength {
+		return fmt.Errorf("combined prefix and postfix length must not exceed %d hex characters", addressHexLength)
+	}
+
 	return nil
 }
 
@@ -163,7 +183,7 @@ func isHex(s string) bool {
 	return true
 }
 
-func worker(wg *sync.WaitGroup, resultChan chan<- *Identity) {
+func worker(wg *sync.WaitGroup, resultChan chan<- *Identity, errChan chan<- error) {
 	defer wg.Done()
 
 	// Pre-allocate buffers for performance
@@ -181,7 +201,13 @@ func worker(wg *sync.WaitGroup, resultChan chan<- *Identity) {
 
 		// Generate random bytes
 		if _, err := rand.Read(randBuf[:]); err != nil {
-			continue
+			if atomic.CompareAndSwapUint32(&found, 0, 1) {
+				select {
+				case errChan <- fmt.Errorf("crypto/rand failed: %w", err):
+				default:
+				}
+			}
+			return
 		}
 
 		// Create and derive identity
@@ -213,9 +239,8 @@ func worker(wg *sync.WaitGroup, resultChan chan<- *Identity) {
 		// Check if address matches pattern
 		atomic.AddUint64(&totalAttempts, 1)
 		if matchesPattern(identity.Address[:]) {
-			select {
-			case resultChan <- &identity:
-			default:
+			if atomic.CompareAndSwapUint32(&found, 0, 1) {
+				resultChan <- &identity
 			}
 			return
 		}
@@ -223,9 +248,9 @@ func worker(wg *sync.WaitGroup, resultChan chan<- *Identity) {
 }
 
 func generateEd25519Public(identity *Identity) {
-	// Generate Ed25519 public key from seed (crypto/ed25519 handles SHA-512 internally)
-	publicKey := ed25519.NewKeyFromSeed(identity.Ed25519Seed[:]).Public().(ed25519.PublicKey)
-	copy(identity.Ed25519Public[:], publicKey)
+	// Ed25519 private keys are encoded as seed||public, so the public half can be reused directly.
+	privateKey := ed25519.NewKeyFromSeed(identity.Ed25519Seed[:])
+	copy(identity.Ed25519Public[:], privateKey[32:])
 }
 
 func clampX25519(privateKey *[32]byte) {
@@ -292,24 +317,24 @@ func matchesPattern(addr []byte) bool {
 func monitorProgress() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
-	
+
 	lastAttempts := uint64(0)
 	startTime := time.Now()
-	
+
 	for {
 		<-ticker.C
-		
+
 		if atomic.LoadUint32(&found) == 1 {
 			return
 		}
-		
+
 		current := atomic.LoadUint64(&totalAttempts)
 		rate := current - lastAttempts
 		lastAttempts = current
-		
+
 		elapsed := time.Since(startTime).Seconds()
 		avgRate := float64(current) / elapsed
-		
+
 		fmt.Printf("\r  Speed: %s/s (avg: %s/s) | Total: %s        ",
 			formatNumber(rate),
 			formatNumber(uint64(avgRate)),
@@ -327,55 +352,135 @@ func formatNumber(n uint64) string {
 }
 
 func saveIdentity(identity *Identity, path string) error {
-	// Save binary identity file (X25519 private + Ed25519 seed)
-	file, err := os.Create(path)
-	if err != nil {
+	if err := validateOutputTarget(path); err != nil {
 		return err
 	}
-	defer file.Close()
-
-	if _, err := file.Write(identity.X25519Private[:]); err != nil {
-		return err
-	}
-	if _, err := file.Write(identity.Ed25519Seed[:]); err != nil {
-		return err
-	}
-
-	// Create human-readable info file
 	infoPath := path + ".txt"
-	infoFile, err := os.Create(infoPath)
-	if err != nil {
-		return err
-	}
-	defer infoFile.Close()
 
-	fmt.Fprintf(infoFile, "LXMF Vanity Address Identity\n")
-	fmt.Fprintf(infoFile, "============================\n\n")
-	fmt.Fprintf(infoFile, "Address (LXMF): %s\n", hex.EncodeToString(identity.Address[:]))
-	fmt.Fprintf(infoFile, "Identity Hash:  %s\n\n", hex.EncodeToString(identity.Hash[:]))
-
-	fmt.Fprintf(infoFile, "Public Key (X25519 + Ed25519):\n")
-	fmt.Fprintf(infoFile, "  X25519 Public:  %s\n", hex.EncodeToString(identity.X25519Public[:]))
-	fmt.Fprintf(infoFile, "  Ed25519 Public: %s\n\n", hex.EncodeToString(identity.Ed25519Public[:]))
-
-	// Prepare combined identity bytes (X25519 private + Ed25519 seed)
+	// Save Reticulum-compatible identity bytes: X25519 private + Ed25519 seed.
 	var privKey [64]byte
 	copy(privKey[0:32], identity.X25519Private[:])
 	copy(privKey[32:64], identity.Ed25519Seed[:])
 
-	// Encoders: standard Base64 (padded) and Base32 (padded, uppercase)
-	b64 := base64.StdEncoding.EncodeToString(privKey[:])
-	b32 := base32.StdEncoding.EncodeToString(privKey[:])
+	if err := writeFileAtomically(path, privKey[:], 0o600); err != nil {
+		return err
+	}
 
-	fmt.Fprintf(infoFile, "Private Key (X25519 + Ed25519):\n")
-	fmt.Fprintf(infoFile, "  X25519 Private: %s\n", hex.EncodeToString(identity.X25519Private[:]))
-	fmt.Fprintf(infoFile, "  Ed25519 Seed:   %s\n", hex.EncodeToString(identity.Ed25519Seed[:]))
-	fmt.Fprintln(infoFile)
+	if err := writeIdentityInfo(identity, path, infoPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: identity saved to %s, but could not write %s: %v\n", path, infoPath, err)
+	}
 
-	// MeshChat/Sideband import formats of the identity bytes
-	fmt.Fprintf(infoFile, "--- Import formats ---\n")
-	fmt.Fprintf(infoFile, "Base64 (MeshChat import string):\n%s\n", b64)
-	fmt.Fprintf(infoFile, "Base32 (Sideband import string):\n%s\n", b32)
+	return nil
+}
 
+func writeIdentityInfo(identity *Identity, identityPath, infoPath string) error {
+	var publicKey [64]byte
+	copy(publicKey[0:32], identity.X25519Public[:])
+	copy(publicKey[32:64], identity.Ed25519Public[:])
+
+	var privKey [64]byte
+	copy(privKey[0:32], identity.X25519Private[:])
+	copy(privKey[32:64], identity.Ed25519Seed[:])
+
+	importB64 := base64.URLEncoding.EncodeToString(privKey[:])
+	importB32 := base32.StdEncoding.EncodeToString(privKey[:])
+
+	var info strings.Builder
+	info.Grow(768)
+	fmt.Fprintf(&info, "LXMF Vanity Address Identity\n")
+	fmt.Fprintf(&info, "============================\n\n")
+	fmt.Fprintf(&info, "Address (LXMF): %s\n", hex.EncodeToString(identity.Address[:]))
+	fmt.Fprintf(&info, "Identity Hash:  %s\n", hex.EncodeToString(identity.Hash[:]))
+	fmt.Fprintf(&info, "Full Specifier: lxmf.delivery.%s:%s\n\n",
+		hex.EncodeToString(identity.Hash[:]),
+		hex.EncodeToString(identity.Address[:]),
+	)
+	fmt.Fprintf(&info, "Public Key (X25519 + Ed25519):\n")
+	fmt.Fprintf(&info, "  X25519 Public:  %s\n", hex.EncodeToString(identity.X25519Public[:]))
+	fmt.Fprintf(&info, "  Ed25519 Public: %s\n", hex.EncodeToString(identity.Ed25519Public[:]))
+	fmt.Fprintf(&info, "  Combined:       %s\n\n", hex.EncodeToString(publicKey[:]))
+	fmt.Fprintf(&info, "Import formats for the same private identity bytes (keep this file secret):\n")
+	fmt.Fprintf(&info, "  Base64 (MeshChat / Reticulum urlsafe):\n")
+	fmt.Fprintf(&info, "  %s\n", importB64)
+	fmt.Fprintf(&info, "  Base32 (Sideband / Reticulum):\n")
+	fmt.Fprintf(&info, "  %s\n\n", importB32)
+	fmt.Fprintf(&info, "Reticulum-compatible private key material is stored only in:\n")
+	fmt.Fprintf(&info, "  %s\n\n", identityPath)
+	fmt.Fprintf(&info, "Verify with:\n")
+	fmt.Fprintf(&info, "  rnid -i %s -H lxmf.delivery\n", identityPath)
+
+	return writeFileAtomically(infoPath, []byte(info.String()), 0o600)
+}
+
+func validateOutputTarget(path string) error {
+	dir := filepath.Dir(path)
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("output directory %s is not accessible: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("output directory %s is not a directory", dir)
+	}
+
+	if err := ensureDoesNotExist(path); err != nil {
+		return err
+	}
+	if err := ensureDoesNotExist(path + ".txt"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func ensureDoesNotExist(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s already exists; refusing to overwrite", path)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func writeFileAtomically(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+
+	file, err := os.CreateTemp(dir, base+".tmp-*")
+	if err != nil {
+		return err
+	}
+
+	tempPath := file.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if err := file.Chmod(mode); err != nil {
+		file.Close()
+		return err
+	}
+
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+
+	if err := file.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+
+	removeTemp = false
 	return nil
 }

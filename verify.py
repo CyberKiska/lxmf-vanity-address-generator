@@ -5,7 +5,7 @@ and the reference Reticulum implementation.
 
 Features:
 - Basic file format verification (size, structure)
-- Comparison with .txt file if available
+- Comparison with address/hash metadata in .txt file if available
 - Full cryptographic verification with Reticulum compatibility check
 
 Requirements:
@@ -90,8 +90,8 @@ def verify_with_reticulum(filepath):
     except ImportError:
         return None
 
-def verify_txt_file(identity_data, filepath):
-    """Verify identity data against .txt file if it exists"""
+def verify_txt_file(manual_address, identity_hash, filepath):
+    """Verify address/hash metadata in .txt file if it exists"""
     txt_file = filepath + ".txt"
     if not os.path.exists(txt_file):
         return None
@@ -100,31 +100,33 @@ def verify_txt_file(identity_data, filepath):
     with open(txt_file, 'r') as f:
         content = f.read()
 
-    # Check if private keys match
-    x25519_priv = identity_data['x25519_private']
-    ed25519_seed = identity_data['ed25519_seed']
+    expected_address = manual_address.hex()
+    expected_identity_hash = identity_hash.hex()
+    txt_address = None
+    txt_identity_hash = None
 
-    x25519_match = x25519_priv.hex() in content
-    ed25519_match = ed25519_seed.hex() in content
-
-    if x25519_match:
-        print("✓ X25519 private key matches")
-    else:
-        print("✗ X25519 private key MISMATCH!")
-
-    if ed25519_match:
-        print("✓ Ed25519 seed matches")
-    else:
-        print("✗ Ed25519 seed MISMATCH!")
-
-    # Show address from txt file
     for line in content.split('\n'):
         if line.startswith('Address (LXMF):'):
+            txt_address = line.split(':', 1)[1].strip()
             print(f"\n{line}")
         elif line.startswith('Identity Hash:'):
+            txt_identity_hash = line.split(':', 1)[1].strip()
             print(line)
 
-    return x25519_match and ed25519_match
+    address_match = txt_address == expected_address
+    identity_match = txt_identity_hash == expected_identity_hash
+
+    if address_match:
+        print("✓ Address matches")
+    else:
+        print(f"✗ Address MISMATCH! expected {expected_address}")
+
+    if identity_match:
+        print("✓ Identity hash matches")
+    else:
+        print(f"✗ Identity hash MISMATCH! expected {expected_identity_hash}")
+
+    return address_match and identity_match
 
 def main():
     if len(sys.argv) != 2:
@@ -158,12 +160,7 @@ def main():
     print(f"Loading identity from: {filepath}")
     identity = load_identity_binary(filepath)
 
-    print("\nIdentity private key:")
-    print(f"  X25519 Private:  {identity['x25519_private'].hex()}")
-    print(f"  Ed25519 Seed:    {identity['ed25519_seed'].hex()}")
-
-    # Verify against .txt file if it exists
-    txt_verification_result = verify_txt_file(identity, filepath)
+    print("\nIdentity private key: loaded (hidden)")
 
     # Manual calculation
     manual_address, identity_hash, public_key = compute_lxmf_address(identity)
@@ -173,6 +170,9 @@ def main():
     print(f"\nManual calculation:")
     print(f"  Identity Hash: {identity_hash.hex()}")
     print(f"  LXMF Address:  {manual_address.hex()}")
+
+    # Verify against .txt file if it exists
+    txt_verification_result = verify_txt_file(manual_address, identity_hash, filepath)
 
     # Try with Reticulum library
     print(f"\nReticulum library verification:")

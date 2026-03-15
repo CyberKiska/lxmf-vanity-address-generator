@@ -2,7 +2,7 @@
 
 ## Expected Search Times
 
-The time to find a vanity address depends on the pattern complexity. Below are approximate times based on testing on a modern multi-core CPU (8 cores at ~100K attempts/sec per core).
+The time to find a vanity address depends on the pattern complexity. The figures below are illustrative ballpark estimates only, and actual throughput depends heavily on CPU, Go version, and system load.
 
 ### Probability and Expected Attempts
 
@@ -36,10 +36,10 @@ By default, the tool uses all available CPU cores. You can adjust this:
 
 ```bash
 # Use half the cores (may reduce heat/power consumption)
-./reticulum-vanity --prefix abc --workers 4
+./lxmf-vanity --prefix abc --workers 4
 
 # Use more workers than cores (usually not beneficial)
-./reticulum-vanity --prefix abc --workers 16
+./lxmf-vanity --prefix abc --workers 16
 ```
 
 **Recommendation:** Stick with the default (number of CPU cores) for best performance.
@@ -66,10 +66,10 @@ To measure your system's performance:
 
 ```bash
 # Quick benchmark (will find "ff" very fast, ~256 attempts)
-./reticulum-vanity --prefix ff --dry-run
+./lxmf-vanity --prefix ff --dry-run
 
 # Longer benchmark (~65K attempts)
-./reticulum-vanity --prefix abcd --dry-run
+./lxmf-vanity --prefix abcd --dry-run
 ```
 
 Look for the "Speed" output to see your system's hash rate.
@@ -103,7 +103,7 @@ Further optimizations possible:
 
 ### Example 1: Simple Prefix
 ```
-$ ./reticulum-vanity --prefix cafe
+$ ./lxmf-vanity --prefix cafe
 Searching for LXMF vanity address...
   Prefix:  cafe
   Workers: 8
@@ -117,7 +117,7 @@ Searching for LXMF vanity address...
 
 ### Example 2: Longer Pattern
 ```
-$ ./reticulum-vanity --prefix deadbeef
+$ ./lxmf-vanity --prefix deadbeef
 Searching for LXMF vanity address...
   Prefix:  deadbeef
   Workers: 8

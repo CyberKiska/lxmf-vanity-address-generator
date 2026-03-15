@@ -1,6 +1,6 @@
 # Binaries
-reticulum-vanity
-reticulum-vanity.exe
+lxmf-vanity
+lxmf-vanity.exe
 *.exe
 *.dll
 *.so
@@ -28,3 +28,4 @@ test_identity*
 Thumbs.db
 
 path/
+__pycache__/
