@@ -44,6 +44,12 @@ go mod download
 go build -o lxmf-vanity .
 ```
 
+### Pre-built binaries
+
+On every push to `main`, [Build binaries](.github/workflows/build-binaries.yml) cross-compiles `lxmf-vanity` for Linux, macOS, and Windows (`amd64` and `arm64`). You can download the ZIPs from **GitHub → Actions → Build binaries →** pick a workflow run **→ Artifacts**.
+
+Each artifact includes a `.sha256` file next to the binary for verification (`sha256sum -c` on Linux/macOS, or compare manually on Windows).
+
 ## Usage
 
 ```bash
