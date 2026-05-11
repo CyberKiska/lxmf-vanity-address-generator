@@ -10,20 +10,17 @@ This document describes the technical implementation of the LXMF vanity address 
 
 Ed25519 is used for digital signatures in Reticulum identities.
 
-**Process:**
-1. Generate 32 random bytes as `seed` using `crypto/rand`
-2. Compute `h = SHA-512(seed)`
-3. Take first 32 bytes of `h` as `a_raw`
-4. Apply clamping to `a_raw`:
-   - `a_raw[0] &= 248` (0xF8) - clear 3 lowest bits
-   - `a_raw[31] &= 127` (0x7F) - clear highest bit  
-   - `a_raw[31] |= 64` (0x40) - set second-highest bit
-5. Interpret clamped `a_raw` as scalar `a`
-6. Compute public key: `A = a × B` (where B is Ed25519 base point)
+**RFC 8032 (conceptual steps — what every conforming implementation does):**
+
+1. Draw 32 random bytes; treat them as the private **seed** (what Reticulum stores as the second half of `Identity.get_private_key()`).
+2. Hash the seed with SHA-512; clamp the first 32 bytes of that digest to form the secret scalar; multiply by the Ed25519 base point to obtain the public key `A`.
+
+**This codebase:** the seed is generated with `crypto/rand`; the scalar expansion, clamping, and public-key derivation are **not** duplicated here — they are performed inside the Go standard library by `ed25519.NewKeyFromSeed`, which returns a 64-byte private key encoding (`seed || public`); the implementation copies out the 32-byte public half (`generateEd25519Public` in `main.go`). That matches RFC 8032 and is interoperable with PyCA / Reticulum’s `Ed25519PrivateKey` usage for the same 32-byte seed material.
 
 **Storage:**
-- Private: 32-byte `seed`
-- Public: 32-byte `A` (point encoding)
+
+- Private on disk: 32-byte **seed** (second 32 bytes of the 64-byte identity file).
+- Public: 32-byte compressed point `A`.
 
 ### X25519 Key Generation
 
@@ -35,7 +32,9 @@ X25519 is used for Diffie-Hellman key exchange and encryption.
    - `k_raw[0] &= 248` (0xF8)
    - `k_raw[31] &= 127` (0x7F)
    - `k_raw[31] |= 64` (0x40)
-3. Compute public key: `K = k × G` (where G is X25519 base point)
+3. Compute public key: `K = k × G` (where G is the X25519 base point).
+
+**This codebase:** the clamp from step 2 is implemented in `clampX25519`; the public key is `curve25519.ScalarBaseMult` (`golang.org/x/crypto/curve25519`), matching RFC 7748 and the same layout as Reticulum’s X25519 identity half.
 
 **Storage:**
 - Private: 32-byte clamped `k`
@@ -52,7 +51,7 @@ The public identifier is a 64-byte concatenation:
 
 ### Destination Hash Computation (LXMF)
 
-The LXMF destination address is computed using a **two-step hashing** process that matches `RNS.Destination.hash(identity, "lxmf", "delivery")`:
+The LXMF destination address matches `RNS.Destination.hash(identity, "lxmf", "delivery")` in the reference implementation. The Reticulum manual states that single destinations logically include the public key in the name; in code, the **name hash** is still taken over the **human/app string only** — `expand_name(None, "lxmf", "delivery")` → `"lxmf.delivery"` (UTF-8) — and the **identity hash** (truncated hash of the 64-byte public key) is concatenated **before** the outer SHA-256, exactly as below.
 
 **Step 1: Compute Name Hash**
 ```
@@ -111,7 +110,7 @@ The pattern matching uses **direct nibble comparison** without hex encoding to a
 
 ```go
 func matchesPattern(addr []byte) bool {
-    // Check prefix (high nibbles of first N bytes)
+    // Check prefix (first N nibbles of the address, high or low per position)
     if len(prefixNibbles) > 0 {
         for i := 0; i < len(prefixNibbles); i++ {
             byteIdx := i / 2
@@ -127,7 +126,7 @@ func matchesPattern(addr []byte) bool {
         }
     }
     
-    // Check postfix (low nibbles of last M bytes)
+    // Check postfix (last M nibbles of the address, high or low per position)
     if len(postfixNibbles) > 0 {
         addrLen := len(addr) * 2
         startNibble := addrLen - len(postfixNibbles)
@@ -155,49 +154,67 @@ func matchesPattern(addr []byte) bool {
 
 ### Worker Pool
 
-Each worker runs independently:
+The main goroutine starts one worker per CPU (or `--workers`), plus a progress monitor. Each worker shares `resultChan`, `errChan`, and atomic flags with the same signature as in `main.go`:
+
 ```go
 for i := 0; i < workers; i++ {
     wg.Add(1)
-    go worker(&wg, resultChan)
+    go worker(&wg, resultChan, errChan)
 }
 ```
 
 ### Worker Loop
 
+Each iteration draws **64** CSPRNG bytes: first 32 for the X25519 scalar (then RFC 7748 clamp + `curve25519.ScalarBaseMult`), second 32 for the Ed25519 **seed** (`ed25519.NewKeyFromSeed`). The LXMF address is the **three-step** hash from [LXMF Address Computation](#lxmf-address-computation) (not a single hash of a long “destination name” buffer). Pseudocode aligned with `worker` in `main.go`:
+
 ```go
-func worker(wg *sync.WaitGroup, resultChan chan<- *Identity) {
+func worker(wg *sync.WaitGroup, resultChan chan<- *Identity, errChan chan<- error) {
     defer wg.Done()
-    
-    // Pre-allocate buffers (reused across iterations)
+
     var randBuf [64]byte
-    destinationName := make([]byte, 77)
-    
+    nameHashFull := sha256.Sum256([]byte("lxmf.delivery"))
+    nameHash := nameHashFull[:10] // reused every iteration (same as RNS name_hash input)
+
     for {
-        // Check if another worker found result
         if atomic.LoadUint32(&found) == 1 {
             return
         }
-        
-        // Generate random keys
-        rand.Read(randBuf[:])
-        
-        // Derive identity
-        // ... (Ed25519 + X25519 generation)
-        
-        // Compute address
-        hash := sha256.Sum256(destinationName)
-        
-        // Check pattern
-        if matchesPattern(hash[:16]) {
-            resultChan <- &identity
+        if _, err := rand.Read(randBuf[:]); err != nil {
+            // on failure: CAS found, non-blocking send to errChan, return
             return
         }
-        
+
+        var identity Identity
+        copy(identity.X25519Private[:], randBuf[0:32])
+        copy(identity.Ed25519Seed[:], randBuf[32:64])
+        clampX25519(&identity.X25519Private)
+        curve25519.ScalarBaseMult(&identity.X25519Public, &identity.X25519Private)
+        generateEd25519Public(&identity)
+
+        var publicKey [64]byte
+        copy(publicKey[0:32], identity.X25519Public[:])
+        copy(publicKey[32:64], identity.Ed25519Public[:])
+        identityHashFull := sha256.Sum256(publicKey[:])
+        copy(identity.Hash[:], identityHashFull[:16])
+
+        var addrHashMaterial [26]byte
+        copy(addrHashMaterial[0:10], nameHash)
+        copy(addrHashMaterial[10:26], identity.Hash[:])
+        addrHashFull := sha256.Sum256(addrHashMaterial[:])
+        copy(identity.Address[:], addrHashFull[:16])
+
         atomic.AddUint64(&totalAttempts, 1)
+        if matchesPattern(identity.Address[:]) {
+            if atomic.CompareAndSwapUint32(&found, 0, 1) {
+                resultChan <- &identity
+            }
+            return
+        }
     }
 }
 ```
+
+`totalAttempts` is incremented **after** computing the candidate address (same ordering as production code).
 
 ### Synchronization
 
@@ -308,11 +325,8 @@ Uses `crypto/rand` which provides:
 
 ### Key Clamping
 
-Clamping ensures:
-- Proper scalar range for X25519 curve operations
-- Conformance with RFC 7748 for the X25519 private scalar and RFC 8032 for the Ed25519.
-
-Ed25519 secret expansion and public-key derivation are delegated to Go's `crypto/ed25519` implementation.
+- **X25519:** this tool applies RFC 7748 clamping to the random 32-byte scalar in `clampX25519`, then `curve25519.ScalarBaseMult` — same curve role as in Reticulum’s `Identity` X25519 key.
+- **Ed25519:** clamping of the expanded secret scalar is **inside** `crypto/ed25519` when deriving the key from the seed; see [Ed25519 Key Generation](#ed25519-key-generation).
 
 ### Hash Truncation
 

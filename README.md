@@ -4,7 +4,7 @@ A cross-platform multi-threaded CLI tool for generating vanity LXMF addresses in
 
 ## Description
 
-This tool generates LXMF identities with a specified pattern for the 16-byte address (32 hex characters). The address is calculated as a SHA-256 hash of the destination name, truncated to 128 bits.
+This tool generates LXMF identities with a specified pattern for the 16-byte address (32 hex characters). The LXMF address matches `RNS.Destination.hash(identity, "lxmf", "delivery")`: the first 80 bits of `SHA-256("lxmf.delivery")` are concatenated with the 128-bit identity hash (`SHA-256(X25519_pub ‖ Ed25519_pub)` truncated), then `SHA-256` of that 26-byte buffer is truncated to 128 bits.
 
 Byte-for-byte compatible with the reference implementation of `RNS.Destination.hash()` for LXMF.
 
