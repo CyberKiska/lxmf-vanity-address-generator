@@ -2,22 +2,22 @@
 
 ## Expected Search Times
 
-The time to find a vanity address depends on the pattern complexity. The figures below are illustrative ballpark estimates only, and actual throughput depends heavily on CPU, Go version, and system load.
+The time to find a vanity address depends on the pattern complexity and your measured local throughput. The current implementation performs full identity generation for every attempt: CSPRNG input, X25519 public key derivation, Ed25519 public key derivation, and LXMF destination hashing. It is not a SHA-only benchmark.
 
 ### Probability and Expected Attempts
 
 Each hex character adds a factor of 16 to the search space:
 
-| Pattern Length | Probability | Expected Attempts | Approximate Time (8 cores as 800K/s) |
-|----------------|-------------|-------------------|--------------------------------------|
-| 1 character    | 1/16        | ~16               | < 1 second                           |
-| 2 characters   | 1/256       | ~256              | < 1 second                           |
-| 3 characters   | 1/4,096     | ~4,096            | < 1 second                           |
-| 4 characters   | 1/65,536    | ~65,536           | < 1 second                           |
-| 5 characters   | 1/1,048,576 | ~1,048,576        | ~1-2 seconds                         |
-| 6 characters   | 1/16,777,216| ~16,777,216       | ~20-30 seconds                       |
-| 7 characters   | 1/268M      | ~268,435,456      | ~5-10 minutes                        |
-| 8 characters   | 1/4.3B      | ~4,294,967,296    | >=1-2 hours                          |
+| Pattern Length | Probability | Expected Attempts | Approx. Time at 45K/s | Approx. Time at 165K/s |
+|----------------|-------------|-------------------|------------------------|-------------------------|
+| 1 character    | 1/16        | ~16               | < 1 second             | < 1 second              |
+| 2 characters   | 1/256       | ~256              | < 1 second             | < 1 second              |
+| 3 characters   | 1/4,096     | ~4,096            | < 1 second             | < 1 second              |
+| 4 characters   | 1/65,536    | ~65,536           | ~1.5 seconds           | < 1 second              |
+| 5 characters   | 1/1,048,576 | ~1,048,576        | ~23 seconds            | ~6 seconds              |
+| 6 characters   | 1/16,777,216| ~16,777,216       | ~6 minutes             | ~2 minutes              |
+| 7 characters   | 1/268M      | ~268,435,456      | ~1.7 hours             | ~27 minutes             |
+| 8 characters   | 1/4.3B      | ~4,294,967,296    | ~26.5 hours            | ~7.2 hours              |
 
 **Note:** These are *expected* values. Actual time may vary significantly due to randomness.
 
@@ -42,7 +42,7 @@ By default, the tool uses all available CPU cores. You can adjust this:
 ./lxmf-vanity --prefix abc --workers 16
 ```
 
-**Recommendation:** Stick with the default (number of CPU cores) for best performance.
+**Recommendation:** Start with the default (number of CPU cores), then try a few worker counts and use the best measured `avg` rate for your machine. On heterogeneous CPUs, such as Apple Silicon performance/efficiency core systems, the default is not always optimal.
 
 ### 2. Pattern Selection
 
@@ -65,36 +65,40 @@ The program is CPU-bound and uses:
 To measure your system's performance:
 
 ```bash
-# Quick benchmark (will find "ff" very fast, ~256 attempts)
-./lxmf-vanity --prefix ff --dry-run
+# Stable benchmark. Interrupt with Ctrl+C after 20-30 seconds.
+./lxmf-vanity --prefix CAFECAFE --dry-run
 
-# Longer benchmark (~65K attempts)
-./lxmf-vanity --prefix abcd --dry-run
+# Compare worker counts on your machine.
+./lxmf-vanity --prefix CAFECAFE --dry-run --workers 4
+./lxmf-vanity --prefix CAFECAFE --dry-run --workers 8
 ```
 
-Look for the "Speed" output to see your system's hash rate.
+Use the `avg` value after it stabilizes. Very short patterns such as `ff` or `abcd` often finish before the progress monitor has enough time to show a representative speed.
 
-## Architecture-Specific Performance
+`--dry-run` prevents saving the matching identity. It still performs a real search and will stop if a match is found.
 
-Performance varies by CPU:
+## Measured Performance Examples
 
-| CPU Type             | Cores | Approx. Speed |
-|----------------------|-------|---------------|
-| Apple M1/M2/M3       | 8-10  | 600K-1M/s     |
-| Intel i7/i9 (modern) | 8-12  | 400K-800K/s   |
-| AMD Ryzen 7/9        | 8-16  | 500K-1M/s     |
-| ARM (Raspberry Pi 4) | 4     | 50K-100K/s    |
-| Cloud VPS (2 vCPU)   | 2     | 100K-200K/s   |
+The numbers below are observed total attempts per second for the current full-identity generator. They are examples, not guaranteed targets.
+
+| System | Workers | Build | Observed avg speed |
+|--------|---------|-------|--------------------|
+| Apple M1 on macOS | 8 | Go 1.26.3 | ~40K-45K/s |
+| Apple M4 on macOS | 10 | Go 1.26.3 | ~165K-167K/s |
+| Intel i7 10th gen on Windows | 12 | prebuilt windows/amd64 binary | ~44K/s |
+| Raspberry Pi 4 B | 4 | prebuilt linux/arm64 binary | ~11K/s |
 
 ## Theoretical Limits
 
-The current implementation is optimized for:
-- Low memory allocations in hot path
-- Efficient SHA-256 computation
+The current implementation keeps the matching path cheap:
+- No hex string conversion in the hot path
+- Low memory allocations per attempt
 - Lock-free atomic counters
-- Direct byte comparison
+- Direct nibble comparison
 
-Further optimizations possible:
+Most time is spent generating cryptographic key material and deriving public keys. Further optimizations may be possible:
+- Larger batched reads from `crypto/rand`
+- Platform-specific X25519/Ed25519 optimizations
 - SIMD SHA-256 (platform-specific)
 - GPU acceleration (requires CUDA/OpenCL)
 - Distributed computing (multiple machines)
@@ -108,26 +112,27 @@ Searching for LXMF vanity address...
   Prefix:  cafe
   Workers: 8
 
-  Speed: 85K/s (avg: 85K/s) | Total: 184K
+  Speed: 43.50K/s (avg: 43.20K/s) | Total: 86.80K
 ✓ Found matching address: cafe46ea7bac86f0ca4ac7e5c8515b91
-  Total attempts: 184689
+  Total attempts: 90012
 ```
 
-**Analysis:** Found in ~2 seconds at 85K/s average speed.
+**Analysis:** A 4-character prefix is usually found within a few seconds on a machine around 45K/s.
 
-### Example 2: Longer Pattern
+### Example 2: Benchmark Run
 ```
-$ ./lxmf-vanity --prefix deadbeef
+$ ./lxmf-vanity --prefix cafecafe --dry-run --workers 8
 Searching for LXMF vanity address...
-  Prefix:  deadbeef
+  Prefix:  cafecafe
   Workers: 8
+  Mode:    DRY RUN (speed test only)
 
-  Speed: 82K/s (avg: 81K/s) | Total: 3.2M
-✓ Found matching address: deadbeef8f1c4e3a7b2d9f5c1e6a8b4d
-  Total attempts: 3245678123
+  Speed: 43.34K/s (avg: 42.93K/s) | Total: 43.34K
+  Speed: 42.43K/s (avg: 42.55K/s) | Total: 85.77K
+  Speed: 43.53K/s (avg: 42.98K/s) | Total: 129.30K
 ```
 
-**Analysis:** 8-character prefix took hours with 81K/s speed.
+**Analysis:** Use the average speed from a run like this for estimates. At ~43K/s, an 8-character prefix has an expected time of roughly 28 hours.
 
 ## Luck Factor
 

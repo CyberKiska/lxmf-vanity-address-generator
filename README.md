@@ -62,11 +62,11 @@ Each artifact includes a `.sha256` file next to the binary for verification (`sh
 # Find an address with prefix "abc" and postfix "def"
 ./lxmf-vanity --prefix abc --postfix def --out my_identity
 
-# Use more threads for faster processing
+# Set worker count manually
 ./lxmf-vanity --prefix deadbeef --workers 16 --out my_identity
 
 # Speed measurement mode (no saving)
-./lxmf-vanity --prefix ff --dry-run
+./lxmf-vanity --prefix CAFECAFE --dry-run
 ```
 
 ## Command Line Parameters
@@ -75,7 +75,7 @@ Each artifact includes a `.sha256` file next to the binary for verification (`sh
 - `--postfix <hex>` - desired suffix at the end of the address (1-32 hex characters)
 - `--workers <int>` - number of parallel threads (default = number of CPUs)
 - `--out <path>` - path to save the identity file (default "identity")
-- `--dry-run` - speed measurement mode only, no saving
+- `--dry-run` - do not save the matching identity; useful for speed measurement
 
 If `--dry-run` is not used, the program checks before generation starts that neither `<out>` nor `<out>.txt` already exists.
 
@@ -177,7 +177,7 @@ Probability of finding an address with a given prefix:
 - 7 characters: ~268,435,456 attempts
 - 8 characters: ~4,294,967,296 attempts
 
-Speed depends on the processor. On modern CPUs, you can expect 100K-500K attempts/sec per core.
+Speed depends on the processor, Go version, worker count, and system load. The current implementation performs full cryptographic identity generation per attempt; Run `./lxmf-vanity --prefix CAFECAFE --dry-run` and use the reported `avg` value for your own estimates.
 
 ## Project Structure
 
