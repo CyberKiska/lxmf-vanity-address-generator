@@ -6,23 +6,27 @@ and the reference Reticulum implementation.
 Features:
 - Basic file format verification (size, structure)
 - Comparison with address/hash metadata in .txt file if available
-- Full cryptographic verification with Reticulum compatibility check
+- Fail-closed reference verification of private/public/hash/address material
 
 Requirements:
     pip install cryptography rns
 
 Usage:
     python3 verify.py <identity_file>
+    python3 verify.py --manual-only <identity_file>
 
 Examples:
-    python3 verify.py my_identity                   # Verify with .txt file if exists
+    python3 verify.py my_identity                   # Requires RNS; verifies .txt if present
+    python3 verify.py --manual-only my_identity     # Structural checks, no compatibility claim
     python3 verify.py path/to/identity_file         # Verify any identity file
     python3 verify.py my_identity > results.txt     # Save output to file
 """
 
-import sys
-import os
+import argparse
 import hashlib
+import os
+import sys
+
 
 def load_identity_binary(filepath):
     """Load identity from binary file (64 bytes private key)"""
@@ -40,6 +44,7 @@ def load_identity_binary(filepath):
         'x25519_private': x25519_private,
         'ed25519_seed': ed25519_seed,
     }
+
 
 def compute_lxmf_address(identity):
     """Compute LXMF address from identity (manual calculation matching RNS.Destination.hash)"""
@@ -74,21 +79,29 @@ def compute_lxmf_address(identity):
 
     return destination_hash, identity_hash, public_key
 
-def verify_with_reticulum(filepath):
-    """Verify using actual Reticulum library (if available)"""
+
+def verify_with_reticulum(filepath, raw_private):
+    """Verify all derived material using the installed Reticulum library."""
     try:
         import RNS
-
-        # Load identity using Reticulum
-        identity = RNS.Identity.from_file(filepath)
-
-        # Compute LXMF destination hash using static method
-        # This avoids transport initialization issues
-        reticulum_hash = RNS.Destination.hash(identity, "lxmf", "delivery")
-
-        return reticulum_hash
     except ImportError:
         return None
+
+    identity = RNS.Identity.from_file(filepath)
+    if identity is None:
+        raise ValueError("RNS.Identity.from_file() rejected the identity file")
+
+    return {
+        "version": getattr(RNS, "__version__", "unknown"),
+        "public": identity.get_public_key(),
+        "identity_hash": identity.hash,
+        "destination_hash": RNS.Destination.hash(identity, "lxmf", "delivery"),
+        "name_destination_hash": RNS.Destination.hash_from_name_and_identity(
+            "lxmf.delivery", identity
+        ),
+        "private_roundtrip": identity.get_private_key() == raw_private,
+    }
+
 
 def verify_txt_file(manual_address, identity_hash, filepath):
     """Verify address/hash metadata in .txt file if it exists"""
@@ -128,16 +141,27 @@ def verify_txt_file(manual_address, identity_hash, filepath):
 
     return address_match and identity_match
 
-def main():
-    if len(sys.argv) != 2:
-        print("Usage: python3 verify.py <identity_file>")
-        sys.exit(1)
 
-    filepath = sys.argv[1]
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Verify a generated identity against Reticulum"
+    )
+    parser.add_argument("identity_file")
+    parser.add_argument(
+        "--manual-only",
+        action="store_true",
+        help="perform structural/manual checks without claiming Reticulum compatibility",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    filepath = args.identity_file
 
     if not os.path.exists(filepath):
         print(f"Error: File '{filepath}' not found")
-        sys.exit(1)
+        return 1
 
     print("=== LXMF Identity File Verification ===\n")
 
@@ -152,7 +176,7 @@ def main():
     if len(data) != 64:
         print(f"\n⚠️  WARNING: Expected 64 bytes (private key), got {len(data)}")
         print("This file may not be compatible with Reticulum!")
-        sys.exit(1)
+        return 1
     else:
         print("✓ Correct size (64 bytes)\n")
 
@@ -163,7 +187,11 @@ def main():
     print("\nIdentity private key: loaded (hidden)")
 
     # Manual calculation
-    manual_address, identity_hash, public_key = compute_lxmf_address(identity)
+    try:
+        manual_address, identity_hash, public_key = compute_lxmf_address(identity)
+    except ImportError as exc:
+        print(f"Error: manual cryptographic checks require the cryptography package: {exc}")
+        return 2
     print(f"\nDerived public keys:")
     print(f"  X25519 Public:   {public_key[:32].hex()}")
     print(f"  Ed25519 Public:  {public_key[32:].hex()}")
@@ -174,39 +202,49 @@ def main():
     # Verify against .txt file if it exists
     txt_verification_result = verify_txt_file(manual_address, identity_hash, filepath)
 
-    # Try with Reticulum library
-    print(f"\nReticulum library verification:")
-    reticulum_hash = verify_with_reticulum(filepath)
-
-    if reticulum_hash is not None:
-        print(f"  LXMF Address: {reticulum_hash.hex()}")
-
-        if manual_address == reticulum_hash:
-            print("\n✓ SUCCESS: Addresses match! Implementation is compatible.")
-
-            if txt_verification_result is not None:
-                if txt_verification_result:
-                    print("✓ .txt file verification also passed.")
-                else:
-                    print("✗ Warning: .txt file verification failed!")
-
-            return 0
-        else:
-            print("\n✗ FAILURE: Addresses DO NOT match!")
-            print(f"  Expected: {reticulum_hash.hex()}")
-            print(f"  Got:      {manual_address.hex()}")
+    if args.manual_only:
+        print("\n⚠ MANUAL-ONLY MODE: no Reticulum compatibility claim was tested.")
+        if txt_verification_result is False:
             return 1
-    else:
-        print("  Reticulum library not available (install with: pip install rns)")
-        print("  Cannot perform full verification, but manual calculation shown above.")
-
-        if txt_verification_result is not None:
-            if txt_verification_result:
-                print("✓ .txt file verification passed.")
-            else:
-                print("✗ .txt file verification failed!")
-
         return 0
+
+    print("\nReticulum reference verification:")
+    try:
+        result = verify_with_reticulum(filepath, data)
+    except Exception as exc:
+        print(f"  ✗ Reticulum rejected the identity: {exc}")
+        return 1
+
+    if result is None:
+        print("  ✗ Reticulum is not installed; compatibility was NOT verified.")
+        print("    Install the pinned/supported RNS version or use --manual-only explicitly.")
+        return 2
+
+    print(f"  RNS Version: {result['version']}")
+    print(f"  LXMF Address: {result['destination_hash'].hex()}")
+
+    checks = {
+        "private identity round-trip": result["private_roundtrip"],
+        "public key bytes": result["public"] == public_key,
+        "identity hash": result["identity_hash"] == identity_hash,
+        "Destination.hash": result["destination_hash"] == manual_address,
+        "hash_from_name_and_identity": (
+            result["name_destination_hash"] == manual_address
+        ),
+        "metadata": txt_verification_result is not False,
+    }
+
+    failed = [name for name, passed in checks.items() if not passed]
+    for name, passed in checks.items():
+        print(f"  {'✓' if passed else '✗'} {name}")
+
+    if failed:
+        print("\n✗ FAILURE: Reticulum compatibility checks failed: " + ", ".join(failed))
+        return 1
+
+    print("\n✓ SUCCESS: Identity bytes and LXMF address match Reticulum.")
+    return 0
+
 
 if __name__ == '__main__':
     sys.exit(main())

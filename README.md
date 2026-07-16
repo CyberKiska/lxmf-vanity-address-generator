@@ -1,241 +1,110 @@
 # LXMF Vanity Address Generator
 
-A cross-platform multi-threaded CLI tool for generating vanity LXMF addresses in the Reticulum network with a specified prefix and/or suffix.
+A cross-platform, parallel Go CLI for generating Reticulum identities whose
+`lxmf.delivery` destination hash has a chosen hexadecimal prefix and/or suffix.
+Python is not used in the search loop.
 
-## Description
+## Compatibility
 
-This tool generates LXMF identities with a specified pattern for the 16-byte address (32 hex characters). The LXMF address matches `RNS.Destination.hash(identity, "lxmf", "delivery")`: the first 80 bits of `SHA-256("lxmf.delivery")` are concatenated with the 128-bit identity hash (`SHA-256(X25519_pub ‖ Ed25519_pub)` truncated), then `SHA-256` of that 26-byte buffer is truncated to 128 bits.
+The implementation matches this Reticulum construction:
 
-Byte-for-byte compatible with the reference implementation of `RNS.Destination.hash()` for LXMF.
+```text
+public_identity = X25519_public || Ed25519_public
+identity_hash   = SHA256(public_identity)[:16]
+name_hash       = SHA256(UTF8("lxmf.delivery"))[:10]
+destination     = SHA256(name_hash || identity_hash)[:16]
+```
 
-## Quick Start
+The saved private identity is the exact 64-byte layout consumed by
+`RNS.Identity.from_file()`:
+
+```text
+X25519_private (32 bytes) || Ed25519_seed (32 bytes)
+```
+
+Compatibility is covered by an offline golden vector produced with Reticulum
+1.3.8 at commit `de0f399a1696895dcb95ad1efa19f3b21a7886ab`. CI additionally generates an
+identity and loads it through that pinned reference revision before publishing
+cross-platform builds.
+
+## Build and use
 
 ```bash
-# Build the project
 make build
 
-# Find an address starting with "cafe"
 ./lxmf-vanity --prefix cafe --out my_identity
-
-# View the result
-cat my_identity.txt
-```
-
-Done! Your identity is saved in files `my_identity` (binary) and `my_identity.txt` (text).
-
-## Cryptography
-
-- **Signing**: Ed25519 (`crypto/ed25519`)
-- **Encryption/Key Exchange**: X25519 (`golang.org/x/crypto/curve25519`)
-- **Hashing**: SHA-256 (`crypto/sha256`)
-- **Random Source**: CSPRNG (`crypto/rand`)
-
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/CyberKiska/lxmf-vanity-address-generator
-cd lxmf-vanity-address-generator
-
-# Download dependencies
-go mod download
-
-# Build
-go build -o lxmf-vanity .
-```
-
-### Pre-built binaries
-
-On every push to `main`, [Build binaries](.github/workflows/build-binaries.yml) cross-compiles `lxmf-vanity` for Linux, macOS, and Windows (`amd64` and `arm64`). You can download the ZIPs from **GitHub → Actions → Build binaries →** pick a workflow run **→ Artifacts**.
-
-Each artifact includes a `.sha256` file next to the binary for verification (`sha256sum -c` on Linux/macOS, or compare manually on Windows).
-
-## Usage
-
-```bash
-# Find an address with prefix "cafe"
-./lxmf-vanity --prefix cafe --out my_identity
-
-# Find an address with postfix (suffix) "1234"
 ./lxmf-vanity --postfix 1234 --out my_identity
-
-# Find an address with prefix "abc" and postfix "def"
 ./lxmf-vanity --prefix abc --postfix def --out my_identity
-
-# Set worker count manually
-./lxmf-vanity --prefix deadbeef --workers 16 --out my_identity
-
-# Speed measurement mode (no saving)
-./lxmf-vanity --prefix CAFECAFE --dry-run
+./lxmf-vanity --prefix deadbeef --workers 8 --out my_identity
 ```
 
-## Command Line Parameters
+Patterns are case-insensitive hexadecimal and are matched against the final
+32-character lowercase destination address. If both are supplied, both must
+match. Their combined length must not exceed 32 characters.
 
-- `--prefix <hex>` - desired prefix at the beginning of the address (1-32 hex characters)
-- `--postfix <hex>` - desired suffix at the end of the address (1-32 hex characters)
-- `--workers <int>` - number of parallel threads (default = number of CPUs)
-- `--out <path>` - path to save the identity file (default "identity")
-- `--dry-run` - do not save the matching identity; useful for speed measurement
+### Options
 
-If `--dry-run` is not used, the program checks before generation starts that neither `<out>` nor `<out>.txt` already exists.
+- `--prefix <hex>`: desired address prefix.
+- `--postfix <hex>`: desired address suffix.
+- `--workers <int>`: parallel workers; defaults to `GOMAXPROCS` and is capped at 256.
+- `--out <path>`: private identity path; defaults to `identity`.
+- `--dry-run`: perform a real search and stop on a match without saving it.
+- `--include-private-exports`: additionally put reversible Base64 and Base32 private identity exports in `<out>.txt`.
 
-## Output File Format
+At least one pattern is required. Existing `<out>` or `<out>.txt` files are
+never overwritten. The destination directory is write-tested before the
+potentially long search starts.
 
-The program creates two files:
+## Output and security
 
-1. **`<out>`** - binary private key file (64 bytes):
-   - X25519 private key (32 bytes)
-   - Ed25519 seed (32 bytes)
+By default two files are created:
 
-   Format compatible with `RNS.Identity.to_file()` / `from_file()`
+1. `<out>` is the sensitive 64-byte Reticulum private identity.
+2. `<out>.txt` contains public address, identity hash, public keys, and the full destination specifier.
 
-2. **`<out>.txt`** - text file with complete information:
-   - LXMF address
-   - Identity hash
-   - Public keys (X25519 + Ed25519)
-   - Full destination specifier
-   - URL-safe Base64 import string
-   - Base32 import string
-   - Verification command reference
+The metadata file does **not** contain private keys by default. If
+`--include-private-exports` is used, `<out>.txt` becomes a second private-key
+file and must receive the same protection, backup policy, and retention policy
+as `<out>`.
 
-   This file is sensitive, since the import strings encode the same private identity bytes as `<out>`.
+On Unix-like systems files are created with mode `0600`. On Windows, Go's Unix
+mode bits do not establish an owner-only ACL; access is inherited from the
+containing directory. Use a trusted private directory with an appropriate
+Windows ACL.
 
+Publication prefers a same-directory temporary file followed by atomic,
+no-replace hard-link creation. On filesystems without hard-link support it
+falls back to exclusive creation, which still refuses overwrite but cannot
+offer the same crash-atomic publication guarantee.
 
 ## Verification
 
-The project includes multiple verification scripts for different use cases:
-
-### Unified Verification (Recommended)
-
-The **`verify.py`** script combines the best of both worlds:
+Install Reticulum and run:
 
 ```bash
-# Verify binary compatibility and any .txt metadata
-python3 verify.py <identity_file>
-
-# Install required dependencies
-pip install cryptography rns
-
-# The script will:
-# ✅ Check file size (64 bytes)
-# ✅ Compare with .txt file metadata if available
-# ✅ Verify cryptographic compatibility with Reticulum
-# ✅ Show detailed results
+python3 -m pip install cryptography rns
+python3 verify.py my_identity
+rnid -i my_identity -H lxmf.delivery
 ```
 
-### Manual Verification
+`verify.py` checks private-file round-trip, public keys, identity hash,
+`RNS.Destination.hash()`, `hash_from_name_and_identity()`, and metadata. It
+returns a non-zero status if RNS is unavailable; `--manual-only` must be used
+explicitly for structural checks that do not establish reference compatibility.
 
-For manual verification using Reticulum tools:
+## Development checks
 
 ```bash
-# Install Reticulum (Python)
-pip install rns
-
-# Verify the address (should match)
-rnid -i <identity_file> -H lxmf.delivery
+make test          # unit and golden-vector tests
+make check         # tests, race detector, and go vet
+make compatibility # end-to-end check with the installed RNS package
+make bench
+make build-all
 ```
 
-## How It Works
-
-1. **X25519 Key Generation**:
-   - Generate 32 bytes of random private key
-   - Apply clamping: `[0] &= 248`, `[31] &= 127`, `[31] |= 64`
-   - Public key = private × basepoint
-
-2. **Ed25519 Key Generation**:
-   - Generate 32 bytes of random seed
-   - Compute SHA-512(seed), take first 32 bytes
-   - Apply clamping (same operations)
-   - Public key = scalar × basepoint
-
-3. **Identity Public Key Formation**:
-   - Concatenation: X25519.public (32) + Ed25519.public (32) = 64 bytes
-
-4. **Identity Hash Calculation**:
-   - Identity Hash = SHA-256(public_key)[0:16]
-
-5. **LXMF Address Calculation** (double hashing):
-   - Name Hash = SHA-256("lxmf.delivery")[0:10]
-   - Addr Material = Name Hash (10) + Identity Hash (16) = 26 bytes
-   - LXMF Address = SHA-256(Addr Material)[0:16]
-
-6. **Parallel Search**:
-   - Each worker generates keys in a loop
-   - Checks if address matches prefix/suffix (without hex conversion)
-   - When match found, stops others and saves result
-
-## Complexity Estimation
-
-Probability of finding an address with a given prefix:
-
-- 1 hex character: ~16 attempts
-- 2 characters: ~256 attempts
-- 3 characters: ~4,096 attempts
-- 4 characters: ~65,536 attempts
-- 5 characters: ~1,048,576 attempts
-- 6 characters: ~16,777,216 attempts
-- 7 characters: ~268,435,456 attempts
-- 8 characters: ~4,294,967,296 attempts
-
-Speed depends on the processor, Go version, worker count, and system load. The current implementation performs full cryptographic identity generation per attempt; Run `./lxmf-vanity --prefix CAFECAFE --dry-run` and use the reported `avg` value for your own estimates.
-
-## Project Structure
-
-```
-.
-├── main.go              # Main program code (+-390 lines)
-├── go.mod / go.sum      # Go module and dependencies
-├── Makefile             # Build and test commands
-├── README.md            # Main documentation
-├── TECHNICAL.md         # Technical documentation
-├── PERFORMANCE.md       # Performance info
-├── LICENSE              # GPLv3 license
-├── verify.py            # Unified verification script
-└── .gitignore           # Ignored files
-```
-
-## Additional Files
-
-- **[TECHNICAL.md](TECHNICAL.md)** - detailed technical documentation for developers
-- **[PERFORMANCE.md](PERFORMANCE.md)** - performance info and search time estimation
-- **[verify.py](verify.py)** - python verification script
-
-## Testing
-
-```bash
-# Run built-in tests
-make test
-
-# Check compatibility (requires Python)
-./lxmf-vanity --prefix 7e57 --out test_id
-python3 verify.py test_id
-```
-
-## Frequently Asked Questions
-
-**Q: How long does it take to find an address with a long prefix?**
-
-A: See [PERFORMANCE.md](PERFORMANCE.md) for time estimates.
-
-
-**Q: Is it compatible with official Reticulum?**
-
-A: Yes, compatible. Verify with `rnid -i <file> -H lxmf.delivery`. But if you want an implementation based on the reference RNS python implementation, check out the repository [lxmf-vanity-address-generator-py](https://github.com/CyberKiska/lxmf-vanity-address-generator-py).
-
-
-**Q: Can I find an address with both prefix and suffix?**
-
-A: Yes, use `--prefix` and `--postfix` simultaneously. Search time will increase.
-
-
-**Q: What characters can be used in an address?**
-
-A: Address is matched on lowercase hex of the 16-byte destination hash. So use [Hexspeak](https://en.wikipedia.org/wiki/Hexspeak) to select the prefix/postfix.
-
-## Acknowledgments
-
-Created for the [Reticulum](https://github.com/markqvist/Reticulum) network - a self-organizing cryptography-based networking stack with readily available hardware.
+See [TECHNICAL.md](TECHNICAL.md) for protocol and implementation details and
+[PERFORMANCE.md](PERFORMANCE.md) for probabilistic search-time guidance.
 
 ## License
 
-GNU General Public License v3.0
+GNU General Public License v3.0.

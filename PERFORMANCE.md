@@ -32,7 +32,8 @@ When using both `--prefix` and `--postfix`, the probabilities multiply:
 
 ### 1. Worker Count
 
-By default, the tool uses all available CPU cores. You can adjust this:
+By default, the tool uses `GOMAXPROCS`, which normally reflects the process CPU
+allowance. You can adjust this between 1 and 256:
 
 ```bash
 # Use half the cores (may reduce heat/power consumption)
@@ -42,7 +43,7 @@ By default, the tool uses all available CPU cores. You can adjust this:
 ./lxmf-vanity --prefix abc --workers 16
 ```
 
-**Recommendation:** Start with the default (number of CPU cores), then try a few worker counts and use the best measured `avg` rate for your machine. On heterogeneous CPUs, such as Apple Silicon performance/efficiency core systems, the default is not always optimal.
+**Recommendation:** Start with the default, then try a few worker counts and use the best measured `avg` rate for your machine. On heterogeneous CPUs, such as Apple Silicon performance/efficiency core systems, the default is not always optimal.
 
 ### 2. Pattern Selection
 
@@ -60,7 +61,23 @@ The program is CPU-bound and uses:
 - **Memory:** ~10-20 MB (lightweight)
 - **Disk:** Only writes when a match is found
 
-### 4. Benchmarking
+### 4. Optimized Builds
+
+`make build` produces a stripped, path-trimmed, cgo-free release binary:
+
+```bash
+make build
+```
+
+The release flags are:
+
+- `CGO_ENABLED=0` - avoids accidental cgo linkage
+- `-trimpath -buildvcs=false` - removes local path and VCS metadata from the binary
+- `-ldflags "-s -w -buildid="` - strips symbols/debug data and removes the build ID
+
+Use `make build-debug` when you need symbols for profiling or debugger work. On private x86_64 builds where you control the target CPU, you can also test a newer microarchitecture level, for example `GOAMD64=v3 make build`; do not use that for broad distribution unless you are comfortable dropping older CPU support.
+
+### 5. Benchmarking
 
 To measure your system's performance:
 
@@ -92,16 +109,19 @@ The numbers below are observed total attempts per second for the current full-id
 
 The current implementation keeps the matching path cheap:
 - No hex string conversion in the hot path
-- Low memory allocations per attempt
-- Lock-free atomic counters
-- Direct nibble comparison
+- Predecoded byte/nibble comparisons for prefix and suffix matching
+- No per-attempt heap escape for the candidate identity
+- Batched per-worker attempt counters to reduce atomic contention
+- Low allocation count concentrated in the standard Ed25519 derivation path
 
-Most time is spent generating cryptographic key material and deriving public keys. Further optimizations may be possible:
-- Larger batched reads from `crypto/rand`
-- Platform-specific X25519/Ed25519 optimizations
-- SIMD SHA-256 (platform-specific)
-- GPU acceleration (requires CUDA/OpenCL)
-- Distributed computing (multiple machines)
+Most time is spent deriving X25519 and Ed25519 public keys. Potential changes
+must be benchmarked and checked against the pinned Reticulum vector. Safe areas
+to investigate include larger worker-local reads from `crypto/rand` and reducing
+temporary allocations while retaining standard, reviewed cryptographic APIs.
+
+Platform-specific or GPU curve implementations are not drop-in optimizations:
+they require independent security review and exhaustive byte-for-byte vectors.
+The candidate generator must never be replaced with a non-cryptographic PRNG.
 
 ## Real-World Examples
 
@@ -125,7 +145,7 @@ $ ./lxmf-vanity --prefix cafecafe --dry-run --workers 8
 Searching for LXMF vanity address...
   Prefix:  cafecafe
   Workers: 8
-  Mode:    DRY RUN (speed test only)
+  Mode:    DRY RUN (matching identity will not be saved)
 
   Speed: 43.34K/s (avg: 42.93K/s) | Total: 43.34K
   Speed: 42.43K/s (avg: 42.55K/s) | Total: 85.77K
@@ -149,7 +169,12 @@ The tool shows real-time statistics:
 - **Avg:** Average attempts per second since start
 - **Total:** Total attempts made so far
 
-Use these to estimate remaining time:
+The search is geometrically distributed. Before a search, the expected number
+of attempts is `16^pattern_length`. After any number of failed attempts, the
+conditional expected number of *additional* attempts is still
+`16^pattern_length`; success does not become due. A useful progress measure is
+the cumulative probability that a match would have occurred by attempt `n`:
+
 ```
-Remaining = (16^pattern_length - total_attempts) / avg_speed
+P(found by n) = 1 - (1 - 16^-pattern_length)^n
 ```
