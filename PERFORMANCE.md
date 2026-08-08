@@ -72,6 +72,7 @@ make build
 The release flags are:
 
 - `CGO_ENABLED=0` - avoids accidental cgo linkage
+- `-buildmode=pie` - emits position-independent executables for platform ASLR
 - `-trimpath -buildvcs=false` - removes local path and VCS metadata from the binary
 - `-ldflags "-s -w -buildid="` - strips symbols/debug data and removes the build ID
 
@@ -82,17 +83,21 @@ Use `make build-debug` when you need symbols for profiling or debugger work. On 
 To measure your system's performance:
 
 ```bash
-# Stable benchmark. Interrupt with Ctrl+C after 20-30 seconds.
-./lxmf-vanity --prefix CAFECAFE --dry-run
+# Stable benchmark using the complete secure generation path.
+./lxmf-vanity --benchmark 30s
 
 # Compare worker counts on your machine.
-./lxmf-vanity --prefix CAFECAFE --dry-run --workers 4
-./lxmf-vanity --prefix CAFECAFE --dry-run --workers 8
+./lxmf-vanity --benchmark 30s --workers 4
+./lxmf-vanity --benchmark 30s --workers 8
 ```
 
-Use the `avg` value after it stabilizes. Very short patterns such as `ff` or `abcd` often finish before the progress monitor has enough time to show a representative speed.
+Use the final average rate. Benchmark mode runs entropy acquisition, both curve
+operations and LXMF hashing, but intentionally never selects an identity as a
+winner.
 
-`--dry-run` prevents saving the matching identity. It still performs a real search and will stop if a match is found.
+`--dry-run` remains available for testing match behavior, but it stops at a
+match and irreversibly discards that private identity. It should not be used for
+performance measurement.
 
 ## Measured Performance Examples
 
@@ -141,15 +146,16 @@ Searching for LXMF vanity address...
 
 ### Example 2: Benchmark Run
 ```
-$ ./lxmf-vanity --prefix cafecafe --dry-run --workers 8
-Searching for LXMF vanity address...
-  Prefix:  cafecafe
+$ ./lxmf-vanity --benchmark 30s --workers 8
+Benchmarking full LXMF identity generation...
+  Duration: 30s
   Workers: 8
-  Mode:    DRY RUN (matching identity will not be saved)
 
   Speed: 43.34K/s (avg: 42.93K/s) | Total: 43.34K
   Speed: 42.43K/s (avg: 42.55K/s) | Total: 85.77K
   Speed: 43.53K/s (avg: 42.98K/s) | Total: 129.30K
+
+Benchmark complete: 1.29M attempts (43.00K/s average)
 ```
 
 **Analysis:** Use the average speed from a run like this for estimates. At ~43K/s, an 8-character prefix has an expected time of roughly 28 hours.

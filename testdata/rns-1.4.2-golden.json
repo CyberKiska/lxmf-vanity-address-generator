@@ -1,0 +1,15 @@
+{
+  "canonical_private_roundtrip": true,
+  "ed25519_public": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+  "ed25519_seed": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "identity_hash": "aca31af0441d81dbec71e82da0b4b5f5",
+  "lxmf_address": "fae321c442e3c9bdcd7a3e79d850e03c",
+  "lxmf_name_hash": "6ec60bc318e2c0f0d908",
+  "raw_candidate_input": "070102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1edf202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "rns_reference_commit": "b48b96e61676504e0a4e527b33b9a0b4495c6872",
+  "rns_version": "1.4.2",
+  "unmasked_and_canonical_addresses_equal": true,
+  "unmasked_private_roundtrip_preserved": true,
+  "x25519_private": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e5f",
+  "x25519_public": "8f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285f"
+}

@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/big"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -42,6 +44,8 @@ var (
 	outPath               string
 	dryRun                bool
 	includePrivateExports bool
+	benchmarkDuration     time.Duration
+	allowInheritedWinACL  bool
 )
 
 var lxmfNameHash = func() [10]byte {
@@ -69,6 +73,8 @@ func init() {
 	flag.StringVar(&outPath, "out", "identity", "Output path for identity file")
 	flag.BoolVar(&dryRun, "dry-run", false, "Find a match but do not save it")
 	flag.BoolVar(&includePrivateExports, "include-private-exports", false, "Include reversible private-key exports in <out>.txt (sensitive)")
+	flag.DurationVar(&benchmarkDuration, "benchmark", 0, "Benchmark full identity generation for a duration (for example 30s); no identity is selected or saved")
+	flag.BoolVar(&allowInheritedWinACL, "allow-inherited-windows-acl", false, "On Windows, explicitly accept the output directory's inherited ACL for private files")
 }
 
 func defaultWorkerCount() int {
@@ -98,30 +104,45 @@ func run() error {
 	if err := validateInputs(); err != nil {
 		return err
 	}
-	if !dryRun {
+	writesOutput := !dryRun && benchmarkDuration == 0
+	if err := validatePlatformOutputSecurity(runtime.GOOS, writesOutput, allowInheritedWinACL); err != nil {
+		return err
+	}
+	if writesOutput {
 		if err := preflightOutputTarget(outPath); err != nil {
 			return err
 		}
 		if runtime.GOOS == "windows" {
-			fmt.Fprintln(os.Stderr, "Warning: Windows file access is controlled by inherited ACLs; save identities only in a trusted private directory.")
+			fmt.Fprintln(os.Stderr, "Warning: inherited Windows ACL explicitly accepted; the output directory must already be restricted to your account.")
 		}
 	}
 
-	matcher, err := newAddressMatcher(prefix, postfix)
-	if err != nil {
-		return err
+	var matcher addressMatcher
+	if benchmarkDuration == 0 {
+		var err error
+		matcher, err = newAddressMatcher(prefix, postfix)
+		if err != nil {
+			return err
+		}
 	}
 
-	fmt.Println("Searching for LXMF vanity address...")
-	if prefix != "" {
-		fmt.Printf("  Prefix:  %s\n", prefix)
-	}
-	if postfix != "" {
-		fmt.Printf("  Postfix: %s\n", postfix)
+	if benchmarkDuration > 0 {
+		fmt.Println("Benchmarking full LXMF identity generation...")
+		fmt.Printf("  Duration: %s\n", benchmarkDuration)
+	} else {
+		fmt.Println("Searching for LXMF vanity address...")
+		if prefix != "" {
+			fmt.Printf("  Prefix:  %s\n", prefix)
+		}
+		if postfix != "" {
+			fmt.Printf("  Postfix: %s\n", postfix)
+		}
+		fmt.Printf("  Expected attempts: %s (geometric expectation; not a deadline)\n", expectedAttempts(len(prefix)+len(postfix)))
 	}
 	fmt.Printf("  Workers: %d\n", workers)
 	if dryRun {
-		fmt.Println("  Mode:    DRY RUN (matching identity will not be saved)")
+		fmt.Println("  Mode:    DRY RUN (matching private identity will not be saved)")
+		fmt.Fprintln(os.Stderr, "Warning: --dry-run does not save the matching private identity, so it cannot be recovered from program output; use --benchmark for performance measurement.")
 	}
 	fmt.Println()
 
@@ -129,6 +150,7 @@ func run() error {
 	defer stopSignals()
 
 	search := newSearcher(matcher, rand.Reader)
+	search.stopOnMatch = benchmarkDuration == 0
 	progressContext, stopProgress := context.WithCancel(context.Background())
 	progressDone := make(chan struct{})
 	go func() {
@@ -136,9 +158,27 @@ func run() error {
 		monitorProgress(progressContext, &search.attempts)
 	}()
 
-	identity, err := search.run(searchContext, workers)
+	runContext := searchContext
+	stopBenchmark := func() {}
+	if benchmarkDuration > 0 {
+		runContext, stopBenchmark = context.WithTimeout(searchContext, benchmarkDuration)
+	}
+	identity, err := search.run(runContext, workers)
+	stopBenchmark()
 	stopProgress()
 	<-progressDone
+	if benchmarkDuration > 0 {
+		if errors.Is(err, context.DeadlineExceeded) {
+			attempts := search.attempts.Load()
+			avgRate := uint64(float64(attempts) / benchmarkDuration.Seconds())
+			fmt.Printf("\nBenchmark complete: %s attempts (%s/s average)\n", formatNumber(attempts), formatNumber(avgRate))
+			return nil
+		}
+		if errors.Is(err, context.Canceled) {
+			return fmt.Errorf("benchmark cancelled")
+		}
+		return err
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return fmt.Errorf("search cancelled")
@@ -166,8 +206,23 @@ func run() error {
 }
 
 func validateInputs() error {
-	if err := validatePatterns(prefix, postfix); err != nil {
-		return err
+	if benchmarkDuration < 0 {
+		return fmt.Errorf("benchmark duration must not be negative")
+	}
+	if benchmarkDuration > 0 {
+		if prefix != "" || postfix != "" {
+			return fmt.Errorf("--benchmark cannot be combined with --prefix or --postfix")
+		}
+		if dryRun {
+			return fmt.Errorf("--benchmark cannot be combined with --dry-run")
+		}
+		if includePrivateExports {
+			return fmt.Errorf("--benchmark cannot be combined with --include-private-exports")
+		}
+	} else {
+		if err := validatePatterns(prefix, postfix); err != nil {
+			return err
+		}
 	}
 	if workers < 1 {
 		return fmt.Errorf("workers must be at least 1")
@@ -177,6 +232,19 @@ func validateInputs() error {
 	}
 	if dryRun && includePrivateExports {
 		return fmt.Errorf("--include-private-exports cannot be used with --dry-run")
+	}
+	return nil
+}
+
+func validatePlatformOutputSecurity(goos string, writesOutput, allowInheritedACL bool) error {
+	if goos != "windows" {
+		if allowInheritedACL {
+			return fmt.Errorf("--allow-inherited-windows-acl is only valid on Windows")
+		}
+		return nil
+	}
+	if writesOutput && !allowInheritedACL {
+		return fmt.Errorf("refusing to write a private identity with an unverified inherited Windows ACL; secure the output directory, then explicitly pass --allow-inherited-windows-acl")
 	}
 	return nil
 }
@@ -213,9 +281,10 @@ func isHex(s string) bool {
 }
 
 type searcher struct {
-	matcher  addressMatcher
-	rng      io.Reader
-	attempts atomic.Uint64
+	matcher     addressMatcher
+	rng         io.Reader
+	stopOnMatch bool
+	attempts    atomic.Uint64
 }
 
 type searchOutcome struct {
@@ -224,7 +293,7 @@ type searchOutcome struct {
 }
 
 func newSearcher(matcher addressMatcher, rng io.Reader) *searcher {
-	return &searcher{matcher: matcher, rng: rng}
+	return &searcher{matcher: matcher, rng: rng, stopOnMatch: true}
 }
 
 func (s *searcher) run(parent context.Context, workerCount int) (Identity, error) {
@@ -296,14 +365,17 @@ func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publ
 			return
 		}
 
-		deriveCandidate(&identity, &randBuf, &publicKey, &addrHashMaterial)
+		if err := deriveCandidate(&identity, &randBuf, &publicKey, &addrHashMaterial); err != nil {
+			publish(searchOutcome{err: err})
+			return
+		}
 
 		localAttempts++
 		if localAttempts >= attemptFlushInterval {
 			flushAttempts(&localAttempts, &s.attempts)
 		}
 
-		if s.matcher.matches(identity.Address[:]) {
+		if s.stopOnMatch && s.matcher.matches(identity.Address[:]) {
 			publish(searchOutcome{identity: identity})
 			return
 		}
@@ -324,12 +396,14 @@ func newAddressHashMaterial() [26]byte {
 	return material
 }
 
-func deriveCandidate(identity *Identity, randBuf *[identityPrivateKeySize]byte, publicKey *[64]byte, addrHashMaterial *[26]byte) {
+func deriveCandidate(identity *Identity, randBuf *[identityPrivateKeySize]byte, publicKey *[64]byte, addrHashMaterial *[26]byte) error {
 	copy(identity.X25519Private[:], randBuf[0:32])
 	copy(identity.Ed25519Seed[:], randBuf[32:64])
 
 	clampX25519(&identity.X25519Private)
-	generateX25519Public(identity)
+	if err := generateX25519Public(identity); err != nil {
+		return fmt.Errorf("X25519 public-key derivation unavailable: %w", err)
+	}
 	generateEd25519Public(identity)
 
 	copy(publicKey[0:32], identity.X25519Public[:])
@@ -341,15 +415,17 @@ func deriveCandidate(identity *Identity, randBuf *[identityPrivateKeySize]byte, 
 
 	addrHashFull := sha256.Sum256(addrHashMaterial[:])
 	copy(identity.Address[:], addrHashFull[:16])
+	return nil
 }
 
-func generateX25519Public(identity *Identity) {
+func generateX25519Public(identity *Identity) error {
 	privateKey, err := ecdh.X25519().NewPrivateKey(identity.X25519Private[:])
 	if err != nil {
-		panic(fmt.Sprintf("invalid internal X25519 private key: %v", err))
+		return err
 	}
 	copy(identity.X25519Public[:], privateKey.PublicKey().Bytes())
 	runtime.KeepAlive(privateKey)
+	return nil
 }
 
 func generateEd25519Public(identity *Identity) {
@@ -509,7 +585,17 @@ func formatNumber(n uint64) string {
 	return fmt.Sprintf("%d", n)
 }
 
+func expectedAttempts(patternHexCharacters int) string {
+	if patternHexCharacters < 0 || patternHexCharacters > addressHexLength {
+		return "invalid"
+	}
+	return new(big.Int).Lsh(big.NewInt(1), uint(4*patternHexCharacters)).String()
+}
+
 func saveIdentity(identity *Identity, path string, privateExports bool) error {
+	if err := validateIdentityConsistency(identity); err != nil {
+		return err
+	}
 	if err := validateOutputTarget(path); err != nil {
 		return err
 	}
@@ -519,11 +605,41 @@ func saveIdentity(identity *Identity, path string, privateExports bool) error {
 	copy(privateKey[0:32], identity.X25519Private[:])
 	copy(privateKey[32:64], identity.Ed25519Seed[:])
 
-	if err := writeFileSafely(path, privateKey[:], 0o600); err != nil {
+	if err := writeFileSafelyRecoverable(path, privateKey[:], 0o600); err != nil {
 		return fmt.Errorf("save identity: %w", err)
 	}
 	if err := writeIdentityInfo(identity, path, path+".txt", privateExports); err != nil {
 		return fmt.Errorf("identity was saved to %s, but metadata could not be saved: %w", path, err)
+	}
+	return nil
+}
+
+func validateIdentityConsistency(identity *Identity) error {
+	if identity == nil {
+		return fmt.Errorf("identity must not be nil")
+	}
+
+	var input [identityPrivateKeySize]byte
+	var expected Identity
+	var publicKey [64]byte
+	material := newAddressHashMaterial()
+	defer wipeBytes(input[:])
+	defer wipeIdentitySecrets(&expected)
+	copy(input[0:32], identity.X25519Private[:])
+	copy(input[32:64], identity.Ed25519Seed[:])
+	if err := deriveCandidate(&expected, &input, &publicKey, &material); err != nil {
+		return err
+	}
+
+	valid := 1
+	valid &= subtle.ConstantTimeCompare(identity.X25519Private[:], expected.X25519Private[:])
+	valid &= subtle.ConstantTimeCompare(identity.Ed25519Seed[:], expected.Ed25519Seed[:])
+	valid &= subtle.ConstantTimeCompare(identity.X25519Public[:], expected.X25519Public[:])
+	valid &= subtle.ConstantTimeCompare(identity.Ed25519Public[:], expected.Ed25519Public[:])
+	valid &= subtle.ConstantTimeCompare(identity.Hash[:], expected.Hash[:])
+	valid &= subtle.ConstantTimeCompare(identity.Address[:], expected.Address[:])
+	if valid != 1 {
+		return fmt.Errorf("identity fields are inconsistent with the private key material; refusing to save")
 	}
 	return nil
 }
@@ -554,6 +670,9 @@ func writeIdentityInfo(identity *Identity, identityPath, infoPath string, privat
 	}
 
 	if privateExports {
+		// Reserve enough additional capacity before private encodings enter the
+		// buffer, so a later growth cannot leave an abandoned secret-bearing copy.
+		info.Grow(512)
 		var privateKey [identityPrivateKeySize]byte
 		var encodedBase64 [base64PrivateExportSize]byte
 		var encodedBase32 [base32PrivateExportSize]byte
@@ -644,10 +763,32 @@ func ensureDoesNotExist(path string) error {
 // hard link. Filesystems without hard-link support fall back to an exclusive
 // create, which preserves no-overwrite behavior but cannot provide crash atomicity.
 func writeFileSafely(path string, data []byte, mode os.FileMode) error {
-	return writeFileSafelyWithLink(path, data, mode, os.Link)
+	return writeFileSafelyWithLinkPolicy(path, data, mode, os.Link, false)
+}
+
+func writeFileSafelyRecoverable(path string, data []byte, mode os.FileMode) error {
+	return writeFileSafelyWithLinkPolicy(path, data, mode, os.Link, true)
 }
 
 func writeFileSafelyWithLink(path string, data []byte, mode os.FileMode, link func(string, string) error) error {
+	return writeFileSafelyWithLinkPolicy(path, data, mode, link, false)
+}
+
+type recoverableWriteError struct {
+	target       string
+	recoveryPath string
+	cause        error
+}
+
+func (e *recoverableWriteError) Error() string {
+	return fmt.Sprintf("could not publish %s; the complete temporary data was retained at %s for recovery: %v", e.target, e.recoveryPath, e.cause)
+}
+
+func (e *recoverableWriteError) Unwrap() error {
+	return e.cause
+}
+
+func writeFileSafelyWithLinkPolicy(path string, data []byte, mode os.FileMode, link func(string, string) error, preserveCompleteTemp bool) error {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 
@@ -656,7 +797,12 @@ func writeFileSafelyWithLink(path string, data []byte, mode os.FileMode, link fu
 		return err
 	}
 	tempPath := file.Name()
-	defer os.Remove(tempPath)
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
 
 	if err := file.Chmod(mode); err != nil {
 		file.Close()
@@ -676,16 +822,38 @@ func writeFileSafelyWithLink(path string, data []byte, mode os.FileMode, link fu
 
 	linkErr := link(tempPath, path)
 	if linkErr == nil {
+		if err := os.Remove(tempPath); err != nil {
+			removeTemp = false
+			syncDirBestEffort(dir)
+			return fmt.Errorf("published %s, but could not remove the temporary hard link %s: %w", path, tempPath, err)
+		}
+		removeTemp = false
 		syncDirBestEffort(dir)
 		return nil
 	}
 	if err := ensureDoesNotExist(path); err != nil {
+		if preserveCompleteTemp {
+			removeTemp = false
+			syncDirBestEffort(dir)
+			return &recoverableWriteError{target: path, recoveryPath: tempPath, cause: errors.Join(linkErr, err)}
+		}
 		return err
 	}
 
 	if err := writeFileExclusive(path, data, mode); err != nil {
+		if preserveCompleteTemp {
+			removeTemp = false
+			syncDirBestEffort(dir)
+			return &recoverableWriteError{target: path, recoveryPath: tempPath, cause: errors.Join(linkErr, err)}
+		}
 		return fmt.Errorf("atomic publication unavailable (%v); exclusive fallback failed: %w", linkErr, err)
 	}
+	if err := os.Remove(tempPath); err != nil {
+		removeTemp = false
+		syncDirBestEffort(dir)
+		return fmt.Errorf("published %s through the exclusive fallback, but could not remove complete temporary file %s: %w", path, tempPath, err)
+	}
+	removeTemp = false
 	syncDirBestEffort(dir)
 	return nil
 }

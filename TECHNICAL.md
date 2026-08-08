@@ -1,392 +1,215 @@
 # Technical Documentation
 
-## Implementation Details
+## Compatibility boundary
 
-This document describes the technical implementation of the LXMF vanity address generator.
+This program implements only the Reticulum behavior required to create and
+persist an identity and derive its LXMF delivery destination. It is not a
+general Reticulum implementation.
 
-## Cryptographic Primitives
+The executable protocol specification is pinned in tests to Reticulum 1.4.2,
+commit `b48b96e61676504e0a4e527b33b9a0b4495c6872`. Future Reticulum revisions
+must pass both the deterministic golden vector and the end-to-end CI check
+before the supported reference revision is changed.
 
-### Ed25519 Key Generation
+## Identity construction
 
-Ed25519 is used for digital signatures in Reticulum identities.
+Each candidate consumes 64 bytes from Go's `crypto/rand.Reader`:
 
-**RFC 8032 (conceptual steps — what every conforming implementation does):**
-
-1. Draw 32 random bytes; treat them as the private **seed** (what Reticulum stores as the second half of `Identity.get_private_key()`).
-2. Hash the seed with SHA-512; clamp the first 32 bytes of that digest to form the secret scalar; multiply by the Ed25519 base point to obtain the public key `A`.
-
-**This codebase:** the seed is generated with `crypto/rand`; the scalar expansion, clamping, and public-key derivation are **not** duplicated here — they are performed inside the Go standard library by `ed25519.NewKeyFromSeed`, which returns a 64-byte private key encoding (`seed || public`); the implementation copies out the 32-byte public half (`generateEd25519Public` in `main.go`). That matches RFC 8032 and is interoperable with PyCA / Reticulum’s `Ed25519PrivateKey` usage for the same 32-byte seed material.
-
-**Storage:**
-
-- Private on disk: 32-byte **seed** (second 32 bytes of the 64-byte identity file).
-- Public: 32-byte compressed point `A`.
-
-### X25519 Key Generation
-
-X25519 is used for Diffie-Hellman key exchange and encryption.
-
-**Process:**
-1. Generate 32 random bytes as `k_raw` using `crypto/rand`
-2. Apply clamping directly to `k_raw`:
-   - `k_raw[0] &= 248` (0xF8)
-   - `k_raw[31] &= 127` (0x7F)
-   - `k_raw[31] |= 64` (0x40)
-3. Compute public key: `K = k × G` (where G is the X25519 base point).
-
-**This codebase:** the clamp from step 2 is implemented in `clampX25519`; the public key is `curve25519.ScalarBaseMult` (`golang.org/x/crypto/curve25519`), matching RFC 7748 and the same layout as Reticulum’s X25519 identity half.
-
-**Storage:**
-- Private: 32-byte clamped `k`
-- Public: 32-byte `K` (u-coordinate)
-
-## LXMF Address Computation
-
-### Public Identifier Format
-
-The public identifier is a 64-byte concatenation:
-```
-[X25519.public (32 bytes)] + [Ed25519.public (32 bytes)]
+```text
+bytes  0..31: X25519 private input
+bytes 32..63: Ed25519 seed
 ```
 
-### Destination Hash Computation (LXMF)
+### X25519
 
-The LXMF destination address matches `RNS.Destination.hash(identity, "lxmf", "delivery")` in the reference implementation. The Reticulum manual states that single destinations logically include the public key in the name; in code, the **name hash** is still taken over the **human/app string only** — `expand_name(None, "lxmf", "delivery")` → `"lxmf.delivery"` (UTF-8) — and the **identity hash** (truncated hash of the 64-byte public key) is concatenated **before** the outer SHA-256, exactly as below.
+Reticulum persists a 32-byte X25519 private key as the first half of its private
+identity. The generator applies the RFC 7748 scalar mask before both deriving
+the public key and retaining the private bytes:
 
-**Step 1: Compute Name Hash**
-```
-name = "lxmf.delivery"
-name_hash = SHA-256(name)[:10]  # First 80 bits (10 bytes)
-```
-
-**Step 2: Compute Identity Hash**
-```
-public_key = X25519.pub (32) + Ed25519.pub (32)
-identity_hash = SHA-256(public_key)[:16]  # First 128 bits (16 bytes)
+```text
+private[0]  &= 248
+private[31] &= 127
+private[31] |= 64
 ```
 
-**Step 3: Compute Destination Hash**
-```
-addr_hash_material = name_hash + identity_hash  # 10 + 16 = 26 bytes
-destination_hash = SHA-256(addr_hash_material)[:16]  # First 128 bits
-```
+Go's standard `crypto/ecdh` X25519 implementation then derives the 32-byte
+public u-coordinate. The explicit mask is intentionally retained because the
+serialized private bytes, not just the public operation, are part of
+compatibility. Fresh keys created by both RNS cryptographic providers use this
+canonical masked representation. A separate RNS import subtlety is that loading
+an externally supplied non-canonical X25519 encoding preserves those raw input
+bytes when `get_private_key()` is called, even though scalar multiplication
+masks them internally. This generator produces new identities; it does not
+import or canonicalise existing identity files.
 
-This is the **LXMF address** (16 bytes / 32 hex characters).
+Go's FIPS 140-only mode rejects X25519 because it is not available through that
+restricted provider. Candidate derivation propagates this as a normal error;
+worker goroutines never panic on cryptographic-provider rejection.
 
-**Code:**
-```go
-// Step 1: Compute name hash (done once, reused)
-nameHashFull := sha256.Sum256([]byte("lxmf.delivery"))
-nameHash := nameHashFull[:10]
+### Ed25519
 
-// Step 2: Build public key and compute identity hash
-var publicKey [64]byte
-copy(publicKey[0:32], identity.X25519Public[:])
-copy(publicKey[32:64], identity.Ed25519Public[:])
+The second 32 bytes are an RFC 8032 Ed25519 seed. `ed25519.NewKeyFromSeed`
+performs SHA-512 expansion, scalar pruning, and public-key derivation. Go's
+returned 64-byte `seed || public` temporary is not persisted; only the seed is
+stored in the identity file.
 
-identityHashFull := sha256.Sum256(publicKey[:])
-copy(identity.Hash[:], identityHashFull[:16])
+### Public and private ordering
 
-// Step 3: Compute destination hash
-var addrHashMaterial [26]byte
-copy(addrHashMaterial[0:10], nameHash)
-copy(addrHashMaterial[10:26], identity.Hash[:])
+Reticulum concatenates encryption material before signing material:
 
-addrHashFull := sha256.Sum256(addrHashMaterial[:])
-copy(identity.Address[:], addrHashFull[:16])
-```
-
-## Pattern Matching
-
-### Hex Encoding
-
-Addresses are compared in hexadecimal:
-- 16 bytes = 32 hex characters
-- Lowercase format: `0-9a-f`
-
-### Matching Algorithm
-
-The pattern matching uses **direct nibble comparison** without hex encoding to avoid string allocations in the hot loop:
-
-```go
-func matchesPattern(addr []byte) bool {
-    // Check prefix (first N nibbles of the address, high or low per position)
-    if len(prefixNibbles) > 0 {
-        for i := 0; i < len(prefixNibbles); i++ {
-            byteIdx := i / 2
-            nibble := byte(0)
-            if i%2 == 0 {
-                nibble = (addr[byteIdx] >> 4) & 0x0F  // High nibble
-            } else {
-                nibble = addr[byteIdx] & 0x0F         // Low nibble
-            }
-            if nibble != prefixNibbles[i] {
-                return false
-            }
-        }
-    }
-    
-    // Check postfix (last M nibbles of the address, high or low per position)
-    if len(postfixNibbles) > 0 {
-        addrLen := len(addr) * 2
-        startNibble := addrLen - len(postfixNibbles)
-        
-        for i := 0; i < len(postfixNibbles); i++ {
-            nibbleIdx := startNibble + i
-            byteIdx := nibbleIdx / 2
-            nibble := byte(0)
-            if nibbleIdx%2 == 0 {
-                nibble = (addr[byteIdx] >> 4) & 0x0F
-            } else {
-                nibble = addr[byteIdx] & 0x0F
-            }
-            if nibble != postfixNibbles[i] {
-                return false
-            }
-        }
-    }
-    
-    return true
-}
+```text
+public identity  = X25519_public  || Ed25519_public
+private identity = X25519_private || Ed25519_seed
 ```
 
-## Multi-Threading Architecture
+The identity hash is the first 16 bytes of SHA-256 over the complete 64-byte
+public identity.
 
-### Worker Pool
+## LXMF destination derivation
 
-The main goroutine starts one worker per CPU (or `--workers`), plus a progress monitor. Each worker shares `resultChan`, `errChan`, and atomic flags with the same signature as in `main.go`:
+For `RNS.Destination.hash(identity, "lxmf", "delivery")`, Reticulum does not
+hash the printable full specifier directly. It first hashes the app/aspect name
+without the printable identity suffix:
 
-```go
-for i := 0; i < workers; i++ {
-    wg.Add(1)
-    go worker(&wg, resultChan, errChan)
-}
+```text
+name_hash       = SHA256(UTF8("lxmf.delivery"))[:10]
+identity_hash   = SHA256(X25519_public || Ed25519_public)[:16]
+hash_material   = name_hash || identity_hash
+destination     = SHA256(hash_material)[:16]
 ```
 
-### Worker Loop
+`RNS.Destination.hash_from_name_and_identity("lxmf.delivery", identity)` splits
+the name into the same app and aspect and delegates to this calculation.
 
-Each iteration draws **64** CSPRNG bytes: first 32 for the X25519 scalar (then RFC 7748 clamp + `curve25519.ScalarBaseMult`), second 32 for the Ed25519 **seed** (`ed25519.NewKeyFromSeed`). The LXMF address is the **three-step** hash from [LXMF Address Computation](#lxmf-address-computation) (not a single hash of a long “destination name” buffer). Pseudocode aligned with `worker` in `main.go`:
+## Pattern matching
 
-```go
-func worker(wg *sync.WaitGroup, resultChan chan<- *Identity, errChan chan<- error) {
-    defer wg.Done()
+The final destination is 16 bytes, rendered externally as 32 lowercase hex
+characters. Patterns are decoded once:
 
-    var randBuf [64]byte
-    nameHashFull := sha256.Sum256([]byte("lxmf.delivery"))
-    nameHash := nameHashFull[:10] // reused every iteration (same as RNS name_hash input)
+- Complete prefix bytes compare from byte zero.
+- An odd final prefix character compares the next byte's high nibble.
+- Complete postfix bytes compare at the end of the address.
+- An odd initial postfix character compares the preceding byte's low nibble.
 
-    for {
-        if atomic.LoadUint32(&found) == 1 {
-            return
-        }
-        if _, err := rand.Read(randBuf[:]); err != nil {
-            // on failure: CAS found, non-blocking send to errChan, return
-            return
-        }
+Prefix and postfix conditions use logical AND. Individual lengths and combined
+length are validated inside the matcher constructor, so bypassing CLI validation
+cannot produce an out-of-range nibble access.
 
-        var identity Identity
-        copy(identity.X25519Private[:], randBuf[0:32])
-        copy(identity.Ed25519Seed[:], randBuf[32:64])
-        clampX25519(&identity.X25519Private)
-        curve25519.ScalarBaseMult(&identity.X25519Public, &identity.X25519Private)
-        generateEd25519Public(&identity)
+## Parallel search
 
-        var publicKey [64]byte
-        copy(publicKey[0:32], identity.X25519Public[:])
-        copy(publicKey[32:64], identity.Ed25519Public[:])
-        identityHashFull := sha256.Sum256(publicKey[:])
-        copy(identity.Hash[:], identityHashFull[:16])
+The `searcher` owns immutable matcher state, a concurrency-safe CSPRNG reader,
+and an atomic attempt counter. Each worker owns its candidate, entropy, public
+key, and hash buffers.
 
-        var addrHashMaterial [26]byte
-        copy(addrHashMaterial[0:10], nameHash)
-        copy(addrHashMaterial[10:26], identity.Hash[:])
-        addrHashFull := sha256.Sum256(addrHashMaterial[:])
-        copy(identity.Address[:], addrHashFull[:16])
+A `sync.Once` guards a capacity-one outcome channel. The first matching
+identity or entropy-source failure becomes the only outcome and cancels the
+worker context. The result identity is sent by value. The main goroutine waits
+for every worker before saving, so worker-local cleanup cannot mutate the
+winner and only one save can occur.
 
-        atomic.AddUint64(&totalAttempts, 1)
-        if matchesPattern(identity.Address[:]) {
-            if atomic.CompareAndSwapUint32(&found, 0, 1) {
-                resultChan <- &identity
-            }
-            return
-        }
-    }
-}
-```
+SIGINT and SIGTERM cancel the same context. Entropy reads themselves are not
+context-aware, so a worker already inside an operating-system random read can
+only stop when that read returns.
 
-`totalAttempts` is incremented **after** computing the candidate address (same ordering as production code).
+`--benchmark` uses the identical entropy, X25519, Ed25519 and hashing path, but
+disables match publication and stops on a deadline. It therefore cannot select
+or accidentally discard a useful matching identity.
 
-### Synchronization
+The default worker count is `runtime.GOMAXPROCS(0)`, which better reflects the
+process CPU allowance than the host CPU count in constrained environments. The
+CLI rejects counts outside 1..256.
 
-- **Atomic counters:** `totalAttempts` and `found` use `sync/atomic`
-- **Result channel:** First worker to find match sends result
-- **Graceful shutdown:** Workers check `found` flag and exit
+## Persistence
 
-### Performance Monitoring
+The primary file is exactly 64 bytes:
 
-Separate goroutine tracks progress:
-```go
-func monitorProgress() {
-    ticker := time.NewTicker(1 * time.Second)
-    defer ticker.Stop()
-    
-    lastAttempts := uint64(0)
-    
-    for {
-        <-ticker.C
-        if atomic.LoadUint32(&found) == 1 {
-            return
-        }
-        
-        current := atomic.LoadUint64(&totalAttempts)
-        rate := current - lastAttempts
-        fmt.Printf("\r  Speed: %d/s | Total: %d", rate, current)
-        lastAttempts = current
-    }
-}
-```
+| Offset | Size | Contents |
+|---:|---:|---|
+| 0 | 32 | masked X25519 private key |
+| 32 | 32 | Ed25519 seed |
 
-## Identity File Format
+Targets are checked before the search and again immediately before saving.
+`os.Lstat` is used so a dangling symlink is treated as an existing target.
 
-### Binary Format (64 bytes)
+Writes use a mode-`0600` same-directory temporary file, `fsync`, and hard-link
+publication that cannot replace an existing target. If hard links are not
+supported, an `O_CREATE|O_EXCL` fallback preserves the no-overwrite guarantee.
+That fallback is not crash-atomic. Directory synchronization is best effort
+because it is not uniformly supported across Go target platforms and filesystems.
 
-The identity file stores only the **private key** in the same format as `RNS.Identity.get_private_key()`:
+The identity is committed before metadata. If metadata fails, the command
+returns an error that explicitly states the identity was already saved; it does
+not falsely report full bundle success.
 
-```
-Offset | Size | Content
--------|------|------------------
-0      | 32   | X25519 private key
-32     | 32   | Ed25519 seed
-```
+If the identity temporary file is complete and synced but no-replace
+publication fails because of a race or filesystem limitation, it is retained
+at mode `0600` and the error reports its recovery path. Completed hard-link or
+fallback publication removes the temporary entry before the final best-effort
+directory sync, avoiding a second persistent link to secret material.
 
-**Total:** 64 bytes
+### Metadata policy
 
-This matches the format produced by `RNS.Identity.to_file()` and can be loaded with `RNS.Identity.from_file()`.
+`<out>.txt` contains only public material by default. Reversible Base64 and
+Base32 private exports require `--include-private-exports`, produce a prominent
+warning, and make the metadata file sensitive.
 
-### Text Format (.txt)
+Unix mode `0600` is not equivalent to a Windows ACL. The CLI fails closed for
+private output on Windows unless the user explicitly passes
+`--allow-inherited-windows-acl`, after restricting the output directory's
+inherited ACL to the intended account.
 
-Human-readable metadata plus optional import encodings of the same private identity bytes:
-```
-LXMF Vanity Address Identity
-============================
+## Secret lifetime
 
-Address (LXMF): cafe61fa1df484eb57c3e37ef5928a3c
-Identity Hash:  9f6813ed6789431163283575125249a8
-Full Specifier: lxmf.delivery.9f6813ed6789431163283575125249a8:cafe61fa1df484eb57c3e37ef5928a3c
+Worker entropy, candidate private fields, serialization buffers, and the
+temporary Go Ed25519 private key receive best-effort clearing. Before any
+identity is persisted, all public/hash/address fields are re-derived from the
+private bytes and compared in constant time. `runtime.KeepAlive`
+is used to retain the cleared object through the wipe point. Go does not promise
+complete erasure: values can be copied by the runtime or compiler, and explicit
+private export text necessarily exists in encoded form when that opt-in is used.
 
-Public Key (X25519 + Ed25519):
-  X25519 Public:  <pub>
-  Ed25519 Public: <pub>
-  Combined:       <pub>
+## Verification strategy
 
-Import formats for the same private identity bytes (keep this file secret):
-  Base64 (MeshChat / Reticulum urlsafe):
-  <b64url>
-  Base32 (Sideband / Reticulum):
-  <b32>
+The Go test suite includes:
 
-Reticulum-compatible private key material is also stored in:
-  <out>
+- A deterministic private/public/hash/address fixture from pinned RNS 1.4.2,
+  reproducible with `scripts/rns_compatibility_oracle.py`.
+- Odd/even and full-length matcher equivalence tests.
+- A native Go fuzz target for matcher equivalence and panic resistance.
+- Invalid-constructor tests.
+- Concurrent winner, cancellation, and injected entropy-failure tests.
+- Private-export opt-in, identity-consistency, permissions, symlink,
+  no-overwrite, and recovery-publication tests.
 
-Verify with:
-  rnid -i <out> -H lxmf.delivery
+CI additionally installs the pinned Reticulum revision, generates a real Go
+identity, loads it with `RNS.Identity.from_file()`, and compares private
+round-trip bytes, public keys, identity hash, both destination-hash APIs, and
+metadata. It also exercises RNS signing, validation, encryption and decryption,
+and rejects any installed RNS version other than 1.4.2. Unit tests run on Linux,
+macOS and Windows, while race, fuzz and FIPS-error tests run on Linux.
 
-```
+`verify.py` fails closed when RNS is unavailable. `--manual-only` performs
+structural calculations but deliberately does not claim reference compatibility.
 
-## Compatibility with Reticulum
+## Performance invariants
 
-### Reference Implementation
+Safe hot-loop properties are:
 
-Reticulum (Python) uses:
-- `cryptography` library for Ed25519/X25519
-- `hashlib.sha256()` for hashing
-- Specific byte order for public identifier
+- Fixed worker-local buffers.
+- Precomputed 10-byte LXMF name hash.
+- `sha256.Sum256` without hash-object allocation.
+- No address hex encoding in the loop.
+- Predecoded byte/nibble matcher.
+- Batched atomic attempt updates.
 
-### Verification
-
-To verify compatibility:
-```bash
-# Generate identity
-./lxmf-vanity --prefix test --out my_identity
-
-# Verify with Reticulum (requires: pip install rns)
-rnid -i my_identity -H lxmf.delivery
-```
-
-The output hash should match the address in `my_identity.txt`.
-
-## Security Considerations
-
-### Randomness Source
-
-Uses `crypto/rand` which provides:
-- Cryptographically secure random numbers from the host platform CSPRNG through Go's standard library
-- No fallback to a non-cryptographic PRNG in the hot loop
-
-### Key Clamping
-
-- **X25519:** this tool applies RFC 7748 clamping to the random 32-byte scalar in `clampX25519`, then `curve25519.ScalarBaseMult` — same curve role as in Reticulum’s `Identity` X25519 key.
-- **Ed25519:** clamping of the expanded secret scalar is **inside** `crypto/ed25519` when deriving the key from the seed; see [Ed25519 Key Generation](#ed25519-key-generation).
-
-### Hash Truncation
-
-Truncating SHA-256 to 128 bits:
-- Maintains collision resistance (2^64 operations)
-- Standard practice for hash-based identifiers
-- Sufficient for network address space
-
-## Performance Characteristics
-
-### Time Complexity
-
-Per iteration:
-- Random generation: O(1)
-- SHA-512 (Ed25519): O(1)
-- Point multiplication: O(log n) - ~10-20 operations
-- SHA-256 (address): O(1)
-- Pattern check: O(k) where k = pattern length
-
-**Total:** ~20-30 microseconds per iteration on modern CPU
-
-### Space Complexity
-
-Per worker:
-- Stack: ~1-2 KB
-- Heap: ~100 bytes (pre-allocated buffers)
-
-Total memory: ~workers × 2 KB ≈ 16 KB for 8 workers
-
-### CPU Utilization
-
-- Near 100% on all worker cores
-- No I/O bottleneck
-- Minimal memory bandwidth usage
-- Cache-friendly (small working set)
-
-## Future Optimizations
-
-### 1. SIMD SHA-256
-
-Use platform-specific SIMD instructions:
-- AVX2 on x86
-- NEON on ARM
-- Potential 2-4× speedup
-
-### 2. GPU Acceleration
-
-Implement on CUDA/OpenCL:
-- Potential 100-1000× speedup
-- Good for very long patterns (8+ chars)
-
-### 3. Distributed Computing
-
-Network protocol for coordinating multiple machines:
-- Linear scaling with number of machines
-- Requires collision prevention strategy
+The dominant work is X25519 and Ed25519 public-key derivation. Optimizations
+must preserve the exact private/public representations above. Custom curve
+implementations, non-cryptographic candidate generators, or SHA-only shortcuts
+are outside the acceptable security and compatibility boundary.
 
 ## References
 
-- [RFC 7748](https://datatracker.ietf.org/doc/html/rfc7748) - X25519
-- [RFC 8032](https://datatracker.ietf.org/doc/html/rfc8032) - Ed25519
-- [Reticulum Documentation](https://reticulum.network/manual/)
-- [Go crypto packages](https://pkg.go.dev/crypto)
+- [Reticulum reference implementation](https://github.com/markqvist/Reticulum)
+- [Reticulum API reference](https://reticulum.network/manual/reference.html)
+- [RFC 7748](https://datatracker.ietf.org/doc/html/rfc7748)
+- [RFC 8032](https://datatracker.ietf.org/doc/html/rfc8032)

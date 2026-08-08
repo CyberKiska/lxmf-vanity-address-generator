@@ -23,9 +23,13 @@ Examples:
 """
 
 import argparse
+import base64
 import hashlib
 import os
 import sys
+
+
+EXPECTED_RNS_VERSION = "1.4.2"
 
 
 def load_identity_binary(filepath):
@@ -91,6 +95,10 @@ def verify_with_reticulum(filepath, raw_private):
     if identity is None:
         raise ValueError("RNS.Identity.from_file() rejected the identity file")
 
+    probe_message = b"lxmf-vanity RNS 1.4.2 compatibility probe"
+    signature = identity.sign(probe_message)
+    ciphertext = identity.encrypt(probe_message)
+
     return {
         "version": getattr(RNS, "__version__", "unknown"),
         "public": identity.get_public_key(),
@@ -100,10 +108,12 @@ def verify_with_reticulum(filepath, raw_private):
             "lxmf.delivery", identity
         ),
         "private_roundtrip": identity.get_private_key() == raw_private,
+        "signature_roundtrip": identity.validate(signature, probe_message),
+        "encryption_roundtrip": identity.decrypt(ciphertext) == probe_message,
     }
 
 
-def verify_txt_file(manual_address, identity_hash, filepath):
+def verify_txt_file(manual_address, identity_hash, public_key, raw_private, filepath):
     """Verify address/hash metadata in .txt file if it exists"""
     txt_file = filepath + ".txt"
     if not os.path.exists(txt_file):
@@ -128,6 +138,31 @@ def verify_txt_file(manual_address, identity_hash, filepath):
 
     address_match = txt_address == expected_address
     identity_match = txt_identity_hash == expected_identity_hash
+    expected_specifier = (
+        f"<lxmf.delivery.{expected_identity_hash}:{expected_address}>"
+    )
+    expected_public_lines = [
+        f"X25519 Public:  {public_key[:32].hex()}",
+        f"Ed25519 Public: {public_key[32:].hex()}",
+        f"Combined:       {public_key.hex()}",
+    ]
+    public_material_match = all(line in content for line in expected_public_lines)
+    specifier_match = expected_specifier in content
+
+    private_base64 = base64.urlsafe_b64encode(raw_private).decode("ascii")
+    private_base32 = base64.b32encode(raw_private).decode("ascii")
+    public_only = "This metadata file contains public information only." in content
+    private_warning = "WARNING: Reversible private identity exports follow" in content
+    if public_only and not private_warning:
+        sensitivity_match = (
+            private_base64 not in content and private_base32 not in content
+        )
+    elif private_warning and not public_only:
+        sensitivity_match = (
+            private_base64 in content and private_base32 in content
+        )
+    else:
+        sensitivity_match = False
 
     if address_match:
         print("✓ Address matches")
@@ -139,7 +174,22 @@ def verify_txt_file(manual_address, identity_hash, filepath):
     else:
         print(f"✗ Identity hash MISMATCH! expected {expected_identity_hash}")
 
-    return address_match and identity_match
+    for label, passed in {
+        "public key metadata": public_material_match,
+        "full destination specifier": specifier_match,
+        "metadata sensitivity label/exports": sensitivity_match,
+    }.items():
+        print(f"{'✓' if passed else '✗'} {label}")
+
+    return all(
+        [
+            address_match,
+            identity_match,
+            public_material_match,
+            specifier_match,
+            sensitivity_match,
+        ]
+    )
 
 
 def parse_args():
@@ -200,7 +250,9 @@ def main():
     print(f"  LXMF Address:  {manual_address.hex()}")
 
     # Verify against .txt file if it exists
-    txt_verification_result = verify_txt_file(manual_address, identity_hash, filepath)
+    txt_verification_result = verify_txt_file(
+        manual_address, identity_hash, public_key, data, filepath
+    )
 
     if args.manual_only:
         print("\n⚠ MANUAL-ONLY MODE: no Reticulum compatibility claim was tested.")
@@ -224,6 +276,9 @@ def main():
     print(f"  LXMF Address: {result['destination_hash'].hex()}")
 
     checks = {
+        f"RNS version is exactly {EXPECTED_RNS_VERSION}": (
+            result["version"] == EXPECTED_RNS_VERSION
+        ),
         "private identity round-trip": result["private_roundtrip"],
         "public key bytes": result["public"] == public_key,
         "identity hash": result["identity_hash"] == identity_hash,
@@ -231,6 +286,8 @@ def main():
         "hash_from_name_and_identity": (
             result["name_destination_hash"] == manual_address
         ),
+        "signature round-trip": result["signature_roundtrip"],
+        "encryption round-trip": result["encryption_roundtrip"],
         "metadata": txt_verification_result is not False,
     }
 

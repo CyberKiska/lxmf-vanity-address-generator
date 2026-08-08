@@ -22,10 +22,10 @@ The saved private identity is the exact 64-byte layout consumed by
 X25519_private (32 bytes) || Ed25519_seed (32 bytes)
 ```
 
-Compatibility is covered by an offline golden vector produced with Reticulum
-1.3.8 at commit `de0f399a1696895dcb95ad1efa19f3b21a7886ab`. CI additionally generates an
-identity and loads it through that pinned reference revision before publishing
-cross-platform builds.
+Compatibility is covered by a reproducible golden fixture produced with
+Reticulum 1.4.2 at commit `b48b96e61676504e0a4e527b33b9a0b4495c6872`.
+CI verifies that fixture, generates a fresh identity, and loads it through that
+exact reference revision before publishing cross-platform builds.
 
 ## Build and use
 
@@ -49,13 +49,30 @@ match. Their combined length must not exceed 32 characters.
 - `--workers <int>`: parallel workers; defaults to `GOMAXPROCS` and is capped at 256.
 - `--out <path>`: private identity path; defaults to `identity`.
 - `--dry-run`: perform a real search and stop on a match without saving it.
+- `--benchmark <duration>`: measure full secure identity-generation throughput
+  without selecting or saving an identity, for example `--benchmark 30s`.
 - `--include-private-exports`: additionally put reversible Base64 and Base32 private identity exports in `<out>.txt`.
+- `--allow-inherited-windows-acl`: on Windows only, explicitly accept the
+  output directory's inherited ACL after securing that directory.
 
-At least one pattern is required. Existing `<out>` or `<out>.txt` files are
-never overwritten. The destination directory is write-tested before the
-potentially long search starts.
+At least one pattern is required outside benchmark mode. Existing `<out>` or
+`<out>.txt` files are never overwritten. The destination directory is
+write-tested before the potentially long search starts. Search mode prints the
+geometric expected-attempt count for the requested pattern; it is an average,
+not a completion deadline.
+
+`--dry-run` irreversibly discards the private identity after printing its
+matching public address. Use `--benchmark`, not `--dry-run`, for performance
+measurement.
 
 ## Output and security
+
+Every candidate consumes 64 fresh bytes from Go's concurrency-safe
+`crypto/rand.Reader`, backed by the operating-system CSPRNG. No deterministic
+or non-cryptographic generator expands candidate material. X25519 inputs are
+canonically masked before persistence, while Ed25519 uses an independent
+32-byte seed. RNS requires X25519, so Go's `fips140=only` mode is not compatible;
+the program detects this and exits with a normal error instead of panicking.
 
 By default two files are created:
 
@@ -68,14 +85,20 @@ file and must receive the same protection, backup policy, and retention policy
 as `<out>`.
 
 On Unix-like systems files are created with mode `0600`. On Windows, Go's Unix
-mode bits do not establish an owner-only ACL; access is inherited from the
-containing directory. Use a trusted private directory with an appropriate
-Windows ACL.
+mode bits do not establish an owner-only ACL. The program therefore refuses to
+write private output on Windows by default. First create a directory restricted
+to your account (for example with Windows security properties or `icacls`),
+then explicitly pass `--allow-inherited-windows-acl`.
 
 Publication prefers a same-directory temporary file followed by atomic,
 no-replace hard-link creation. On filesystems without hard-link support it
 falls back to exclusive creation, which still refuses overwrite but cannot
 offer the same crash-atomic publication guarantee.
+
+If complete identity data was written but a publication race prevents the
+requested target from being created, the program retains the complete
+mode-`0600` temporary file and reports its exact recovery path instead of
+discarding a potentially expensive result.
 
 ## Verification
 
@@ -88,16 +111,20 @@ rnid -i my_identity -H lxmf.delivery
 ```
 
 `verify.py` checks private-file round-trip, public keys, identity hash,
-`RNS.Destination.hash()`, `hash_from_name_and_identity()`, and metadata. It
-returns a non-zero status if RNS is unavailable; `--manual-only` must be used
-explicitly for structural checks that do not establish reference compatibility.
+`RNS.Destination.hash()`, `hash_from_name_and_identity()`, signing,
+encryption/decryption, and metadata. It requires exactly RNS 1.4.2 and returns
+a non-zero status if it is unavailable or a different version is installed.
+`--manual-only` must be used explicitly for structural checks that do not
+establish reference compatibility.
 
 ## Development checks
 
 ```bash
 make test          # unit and golden-vector tests
 make check         # tests, race detector, and go vet
+make fuzz          # native matcher fuzz target
 make compatibility # end-to-end check with the installed RNS package
+make oracle        # verify the checked-in fixture with exactly RNS 1.4.2
 make bench
 make build-all
 ```
