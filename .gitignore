@@ -1,6 +1,9 @@
 # Binaries
 lxmf-vanity
 lxmf-vanity.exe
+lxmf-vanity-debug
+lxmf-vanity-linux-*
+lxmf-vanity-darwin-*
 *.exe
 *.dll
 *.so
@@ -29,3 +32,5 @@ Thumbs.db
 
 path/
 __pycache__/
+.venv/
+.reference-rns/

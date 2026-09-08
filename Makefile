@@ -9,11 +9,11 @@ LDFLAGS ?= -s -w -buildid=
 
 # Build the binary
 build:
-	CGO_ENABLED=0 go build $(BUILDMODE) $(BUILDFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY) .
+	CGO_ENABLED=0 go build $(BUILDMODE) $(BUILDFLAGS) -ldflags "$(LDFLAGS)" -o "$(BINARY)" .
 
 # Build with debug symbols
 build-debug:
-	go build -o $(BINARY)-debug .
+	go build -o "$(BINARY)-debug" .
 
 # Build for multiple platforms
 build-all:
@@ -50,11 +50,11 @@ fuzz:
 # Run quick CLI smoke tests
 smoke: build
 	@echo "Testing with prefix 'ff'..."
-	./$(BINARY) --prefix ff --dry-run
+	"./$(BINARY)" --prefix ff --dry-run
 	@echo "\nTesting with postfix '99'..."
-	./$(BINARY) --postfix 99 --dry-run
+	"./$(BINARY)" --postfix 99 --dry-run
 	@echo "\nTesting with both prefix 'a' and postfix 'b'..."
-	./$(BINARY) --prefix a --postfix b --dry-run
+	"./$(BINARY)" --prefix a --postfix b --dry-run
 
 # Run targeted benchmarks
 bench:
@@ -64,7 +64,7 @@ bench:
 compatibility: build
 	@set -eu; tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
-	./$(BINARY) --prefix 0 --workers 2 --out "$$tmpdir/identity"; \
+	"./$(BINARY)" --prefix 0 --workers 2 --out "$$tmpdir/identity"; \
 	$(PYTHON) scripts/rns_compatibility_oracle.py --check testdata/rns-identity-vectors.json --binary "$(BINARY)" $(RNS_FLAGS); \
 	$(PYTHON) verify.py "$$tmpdir/identity" $(RNS_FLAGS)
 
@@ -77,7 +77,7 @@ regenerate-golden:
 
 # Install to system
 install: build
-	cp $(BINARY) /usr/local/bin/
+	cp "$(BINARY)" /usr/local/bin/
 
 # Download dependencies
 deps:
