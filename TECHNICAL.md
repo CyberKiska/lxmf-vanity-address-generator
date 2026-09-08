@@ -6,10 +6,19 @@ This program implements only the Reticulum behavior required to create and
 persist an identity and derive its LXMF delivery destination. It is not a
 general Reticulum implementation.
 
-The executable protocol specification is pinned in tests to Reticulum 1.4.2,
-commit `b48b96e61676504e0a4e527b33b9a0b4495c6872`. Future Reticulum revisions
-must pass both the deterministic golden vector and the end-to-end CI check
-before the supported reference revision is changed.
+CI runs the same deterministic corpus and end-to-end checks against both
+Reticulum providers at these exact source revisions:
+
+| RNS version | Reference commit |
+|---|---|
+| 1.5.2 | `ea98db4f53dcf0defc0e71a16e60d28b1229c4e6` |
+| 1.4.2 | `b48b96e61676504e0a4e527b33b9a0b4495c6872` |
+
+Expected cryptographic bytes are independent of version/provenance metadata.
+The verifier checks installed behavior and only enforces a version when
+`--expect-rns-version` is supplied. Future references should pass the corpus
+and CLI checks before being added to the tested compatibility claims. The
+program does not implement general RNS networking, announce handling or ratchets.
 
 ## Identity construction
 
@@ -105,15 +114,21 @@ A `sync.Once` guards a capacity-one outcome channel. The first matching
 identity or entropy-source failure becomes the only outcome and cancels the
 worker context. The result identity is sent by value. The main goroutine waits
 for every worker before saving, so worker-local cleanup cannot mutate the
-winner and only one save can occur.
+winner and only one save can occur. On parent cancellation, workers are joined
+and any completed outcome is consumed before returning a cancellation error.
+A matching in-flight candidate therefore survives cancellation.
 
 SIGINT and SIGTERM cancel the same context. Entropy reads themselves are not
 context-aware, so a worker already inside an operating-system random read can
-only stop when that read returns.
+only stop when that read returns. Injected reader errors return through the
+outcome channel; production OS entropy failure can make modern Go terminate
+irrecoverably. That remains fail-closed but does not guarantee cleanup.
 
 `--benchmark` uses the identical entropy, X25519, Ed25519 and hashing path, but
 disables match publication and stops on a deadline. It therefore cannot select
-or accidentally discard a useful matching identity.
+or accidentally discard a useful matching identity. Final benchmark rates use
+measured monotonic elapsed time, including worker shutdown, rather than dividing
+by the requested duration.
 
 The default worker count is `runtime.GOMAXPROCS(0)`, which better reflects the
 process CPU allowance than the host CPU count in constrained environments. The
@@ -128,8 +143,15 @@ The primary file is exactly 64 bytes:
 | 0 | 32 | masked X25519 private key |
 | 32 | 32 | Ed25519 seed |
 
-Targets are checked before the search and again immediately before saving.
-`os.Lstat` is used so a dangling symlink is treated as an existing target.
+An `os.Root` for the parent directory is held from preflight through publication
+and cleanup. Root-relative `Lstat` treats dangling symlinks as occupied targets.
+Preflight checks both final filenames and creates/removes a temporary file with
+the longest required filename. Every mutation stays within the opened root,
+including exclusive creation, descriptor-based chmod, hard linking and removal.
+Parent replacement cannot redirect these writes; a location check detects a
+moved/replaced parent and explains that recovery names refer to the original
+directory. Another actor allowed to alter directory entries remains outside
+this protection: the output directory must be trusted.
 
 Writes use a mode-`0600` same-directory temporary file, `fsync`, and hard-link
 publication that cannot replace an existing target. If hard links are not
@@ -137,7 +159,10 @@ supported, an `O_CREATE|O_EXCL` fallback preserves the no-overwrite guarantee.
 That fallback is not crash-atomic. Directory synchronization is best effort
 because it is not uniformly supported across Go target platforms and filesystems.
 
-The identity is committed before metadata. If metadata fails, the command
+The identity is committed before metadata and before success output. Target
+availability is not rechecked as an early save-time gate: the writer handles a
+late primary collision by retaining the complete temporary file, and a late
+metadata collision must not prevent primary persistence. If metadata fails, the command
 returns an error that explicitly states the identity was already saved; it does
 not falsely report full bundle success.
 
@@ -160,36 +185,60 @@ inherited ACL to the intended account.
 
 ## Secret lifetime
 
-Worker entropy, candidate private fields, serialization buffers, and the
-temporary Go Ed25519 private key receive best-effort clearing. Before any
+Worker entropy, candidate private fields, temporary outcome copies, serialization
+buffers, and the temporary Go Ed25519 private key receive best-effort clearing.
+Private exports are written directly into a pre-sized byte buffer, avoiding
+formatter-pool copies and buffer growth after secrets are added. Before any
 identity is persisted, all public/hash/address fields are re-derived from the
 private bytes and compared in constant time. `runtime.KeepAlive`
 is used to retain the cleared object through the wipe point. Go does not promise
-complete erasure: values can be copied by the runtime or compiler, and explicit
+complete erasure: values can be copied by the runtime or compiler, the opaque
+X25519 key object contains private data the caller cannot clear, and explicit
 private export text necessarily exists in encoded form when that opt-in is used.
 
 ## Verification strategy
 
 The Go test suite includes:
 
-- A deterministic private/public/hash/address fixture from pinned RNS 1.4.2,
-  reproducible with `scripts/rns_compatibility_oracle.py`.
+- The historical RNS 1.4.2 fixture plus a 131-input deterministic corpus covering
+  all-zero/all-FF inputs, the original fixture, single-byte variations, and
+  reproducible SHA-512-derived public test inputs. The corpus compares canonical
+  private bytes, public bytes, hashes, deterministic Ed25519 signatures, and
+  X25519 shared secrets. Never use these public fixture keys as real identities.
 - Odd/even and full-length matcher equivalence tests.
 - A native Go fuzz target for matcher equivalence and panic resistance.
 - Invalid-constructor tests.
-- Concurrent winner, cancellation, and injected entropy-failure tests.
+- Concurrent winner, live cancellation, and injected entropy-failure tests.
 - Private-export opt-in, identity-consistency, permissions, symlink,
-  no-overwrite, and recovery-publication tests.
+  no-overwrite, directory-replacement, and recovery-publication tests.
+- CLI subprocess checks for rejected arguments, dry-run and benchmark output;
+  Python checks for metadata validation and Makefile cleanup/error propagation.
 
-CI additionally installs the pinned Reticulum revision, generates a real Go
-identity, loads it with `RNS.Identity.from_file()`, and compares private
-round-trip bytes, public keys, identity hash, both destination-hash APIs, and
-metadata. It also exercises RNS signing, validation, encryption and decryption,
-and rejects any installed RNS version other than 1.4.2. Unit tests run on Linux,
-macOS and Windows, while race, fuzz and FIPS-error tests run on Linux.
+`scripts/rns_compatibility_oracle.py` regenerates the corpus using actual RNS.
+It checks raw and masked private import preservation, both destination-hash
+APIs, and an incoming SINGLE destination constructor with only network
+registration mocked. Signatures are validated using public-only identities;
+encryption is public-key-to-private-key. `--binary` additionally generates
+fresh Go files in both metadata modes, tests `RNS.Identity.from_file()`, verifies
+metadata, and runs actual `rnid` file/Base64/Base32 imports in subprocesses.
+
+CI checks out both pinned references and installs the exact Python dependencies
+in `requirements-reference.txt`. Provider choice occurs at RNS import time:
+`--provider internal` temporarily hides PyCA from RNS's discovery mechanism;
+the reference algorithms are unmodified and the resulting backend is asserted.
+Each provider is tested in a fresh process. Unit/CLI tests run on Linux, macOS
+and Windows with Go 1.26.8 and 1.27.1; race, fuzz and FIPS checks run on Linux.
 
 `verify.py` fails closed when RNS is unavailable. `--manual-only` performs
 structural calculations but deliberately does not claim reference compatibility.
+The verifier reads a bounded regular-file snapshot of the 64-byte identity and
+at most 64 KiB of metadata. It compares recognized, unique metadata fields rather
+than searching for expected substrings. It preserves raw private import bytes.
+
+Release binaries use Go 1.27.1 and are scanned with pinned `govulncheck` in
+addition to a source scan. The workflow produces six cgo-free PIE targets and
+records toolchain/build information, checksums and trusted-main provenance.
+See `VALIDATION.md` for local execution evidence and remaining platform limits.
 
 ## Performance invariants
 
