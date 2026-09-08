@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -332,7 +333,7 @@ func TestSaveIdentityDefaultMetadataContainsNoPrivateExports(t *testing.T) {
 	path := filepath.Join(dir, "identity")
 	identity := goldenIdentity(t)
 
-	if err := saveIdentity(&identity, path, false); err != nil {
+	if err := testOutput(t, path).saveIdentity(&identity, false); err != nil {
 		t.Fatalf("saveIdentity failed: %v", err)
 	}
 
@@ -378,7 +379,7 @@ func TestSaveIdentityPrivateExportsRequireExplicitOptIn(t *testing.T) {
 	path := filepath.Join(dir, "identity")
 	identity := goldenIdentity(t)
 
-	if err := saveIdentity(&identity, path, true); err != nil {
+	if err := testOutput(t, path).saveIdentity(&identity, true); err != nil {
 		t.Fatalf("saveIdentity failed: %v", err)
 	}
 	metadata, err := os.ReadFile(path + ".txt")
@@ -407,7 +408,7 @@ func TestSaveIdentityRejectsInconsistentDerivedFields(t *testing.T) {
 	identity := goldenIdentity(t)
 	identity.Address[0] ^= 0xff
 
-	if err := saveIdentity(&identity, path, false); err == nil {
+	if err := testOutput(t, path).saveIdentity(&identity, false); err == nil {
 		t.Fatal("expected inconsistent identity to be rejected")
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -419,14 +420,14 @@ func TestSaveIdentityPreservesWinnerAfterLateCollision(t *testing.T) {
 	for _, suffix := range []string{"", ".txt"} {
 		t.Run("collision"+suffix, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "identity")
-			if err := preflightOutputTarget(path); err != nil {
+			if err := testOutput(t, path).preflight(); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(path+suffix, []byte("existing"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			identity := goldenIdentity(t)
-			err := saveIdentity(&identity, path, false)
+			err := testOutput(t, path).saveIdentity(&identity, false)
 			if err == nil {
 				t.Fatal("expected collision error")
 			}
@@ -459,7 +460,7 @@ func TestValidateOutputTargetRejectsExistingOutputBeforeSearch(t *testing.T) {
 	if err := os.WriteFile(path, []byte("existing"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := preflightOutputTarget(path); err == nil {
+	if err := testOutput(t, path).preflight(); err == nil {
 		t.Fatal("expected existing output path to be rejected")
 	}
 }
@@ -467,11 +468,12 @@ func TestValidateOutputTargetRejectsExistingOutputBeforeSearch(t *testing.T) {
 func TestWriteFileSafelyRefusesExistingTarget(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "target")
+	output := testOutput(t, path)
 
-	if err := writeFileSafely(path, []byte("first"), 0o600); err != nil {
+	if err := output.writeFile(output.name, []byte("first"), 0o600, output.root.Link, false); err != nil {
 		t.Fatalf("initial write failed: %v", err)
 	}
-	if err := writeFileSafely(path, []byte("second"), 0o600); err == nil {
+	if err := output.writeFile(output.name, []byte("second"), 0o600, output.root.Link, false); err == nil {
 		t.Fatal("expected overwrite refusal")
 	}
 	data, err := os.ReadFile(path)
@@ -486,11 +488,12 @@ func TestWriteFileSafelyRefusesExistingTarget(t *testing.T) {
 func TestWriteFileSafelyFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "target")
+	output := testOutput(t, path)
 	linkUnavailable := func(string, string) error {
 		return errors.New("hard links unavailable")
 	}
 
-	if err := writeFileSafelyWithLink(path, []byte("identity"), 0o600, linkUnavailable); err != nil {
+	if err := output.writeFile(output.name, []byte("identity"), 0o600, linkUnavailable, false); err != nil {
 		t.Fatalf("exclusive fallback failed: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -500,7 +503,7 @@ func TestWriteFileSafelyFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
 	if string(data) != "identity" {
 		t.Fatalf("fallback content = %q", data)
 	}
-	if err := writeFileSafelyWithLink(path, []byte("replacement"), 0o600, linkUnavailable); err == nil {
+	if err := output.writeFile(output.name, []byte("replacement"), 0o600, linkUnavailable, false); err == nil {
 		t.Fatal("fallback overwrote an existing target")
 	}
 }
@@ -508,15 +511,16 @@ func TestWriteFileSafelyFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
 func TestRecoverableIdentityWriteRetainsCompleteTempOnPublicationRace(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "identity")
+	output := testOutput(t, path)
 	secret := []byte("complete private identity material")
 	publicationRace := func(_, target string) error {
-		if err := os.WriteFile(target, []byte("racer"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, target), []byte("racer"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return errors.New("injected publication race")
 	}
 
-	err := writeFileSafelyWithLinkPolicy(path, secret, 0o600, publicationRace, true)
+	err := output.writeFile(output.name, secret, 0o600, publicationRace, true)
 	var recoveryErr *recoverableWriteError
 	if !errors.As(err, &recoveryErr) {
 		t.Fatalf("expected recoverable write error, got %v", err)
@@ -542,7 +546,7 @@ func TestEnsureDoesNotExistRejectsDanglingSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "missing"), path); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureDoesNotExist(path); err == nil {
+	if err := testOutput(t, path).ensureDoesNotExist(filepath.Base(path)); err == nil {
 		t.Fatal("expected dangling symlink target to be rejected")
 	}
 }
@@ -695,4 +699,58 @@ func (r *countingReader) BytesRead() uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.read
+}
+
+func testOutput(t *testing.T, path string) *outputTarget {
+	t.Helper()
+	output, err := openOutputTarget(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { output.root.Close() })
+	return output
+}
+
+func TestOutputDirectoryReplacementCannotRedirectIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("open directory handles may prohibit renaming on Windows")
+	}
+	for _, fallback := range []bool{false, true} {
+		t.Run(fmt.Sprint("fallback=", fallback), func(t *testing.T) {
+			parent := t.TempDir()
+			dir := filepath.Join(parent, "output")
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			output := testOutput(t, filepath.Join(dir, "identity"))
+			if err := output.preflight(); err != nil {
+				t.Fatal(err)
+			}
+			moved := filepath.Join(parent, "moved")
+			if err := os.Rename(dir, moved); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			link := output.root.Link
+			if fallback {
+				link = func(string, string) error { return errors.New("no hard links") }
+			}
+			if err := output.writeFile(output.name, []byte("private data"), 0600, link, true); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(filepath.Join(moved, "identity"))
+			if err != nil || string(got) != "private data" {
+				t.Fatalf("anchored output missing: %v", err)
+			}
+			files, err := os.ReadDir(dir)
+			if err != nil || len(files) != 0 {
+				t.Fatalf("replacement directory modified: %v", err)
+			}
+			if output.checkLocation() == nil {
+				t.Fatal("directory replacement was not reported")
+			}
+		})
+	}
 }

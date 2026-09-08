@@ -111,8 +111,15 @@ func run() error {
 	if err := validatePlatformOutputSecurity(runtime.GOOS, writesOutput, allowInheritedWinACL); err != nil {
 		return err
 	}
+	var output *outputTarget
 	if writesOutput {
-		if err := preflightOutputTarget(outPath); err != nil {
+		var err error
+		output, err = openOutputTarget(outPath)
+		if err != nil {
+			return err
+		}
+		defer output.root.Close()
+		if err := output.preflight(); err != nil {
 			return err
 		}
 		if runtime.GOOS == "windows" {
@@ -193,7 +200,7 @@ func run() error {
 	// Persist the expensive result before writing success output to a pipe that
 	// might have been closed by its reader.
 	if !dryRun {
-		if err := saveIdentity(&identity, outPath, includePrivateExports); err != nil {
+		if err := output.saveIdentity(&identity, includePrivateExports); err != nil {
 			return err
 		}
 	}
@@ -599,7 +606,8 @@ func expectedAttempts(patternHexCharacters int) string {
 	return new(big.Int).Lsh(big.NewInt(1), uint(4*patternHexCharacters)).String()
 }
 
-func saveIdentity(identity *Identity, path string, privateExports bool) error {
+func (o *outputTarget) saveIdentity(identity *Identity, privateExports bool) error {
+	path := o.path
 	if err := validateIdentityConsistency(identity); err != nil {
 		return err
 	}
@@ -615,13 +623,13 @@ func saveIdentity(identity *Identity, path string, privateExports bool) error {
 	copy(privateKey[0:32], identity.X25519Private[:])
 	copy(privateKey[32:64], identity.Ed25519Seed[:])
 
-	if err := writeFileSafelyRecoverable(path, privateKey[:], 0o600); err != nil {
-		return fmt.Errorf("save identity: %w", err)
+	if err := o.writeFile(o.name, privateKey[:], 0o600, o.root.Link, true); err != nil {
+		return fmt.Errorf("save identity: %w", errors.Join(err, o.checkLocation()))
 	}
-	if err := writeIdentityInfo(identity, path, path+".txt", privateExports); err != nil {
-		return fmt.Errorf("identity was saved to %s, but metadata could not be saved: %w", path, err)
+	if err := o.writeIdentityInfo(identity, privateExports); err != nil {
+		return fmt.Errorf("identity was saved to %s, but metadata could not be saved: %w", path, errors.Join(err, o.checkLocation()))
 	}
-	return nil
+	return o.checkLocation()
 }
 
 func validateIdentityConsistency(identity *Identity) error {
@@ -654,7 +662,7 @@ func validateIdentityConsistency(identity *Identity) error {
 	return nil
 }
 
-func writeIdentityInfo(identity *Identity, identityPath, infoPath string, privateExports bool) error {
+func (o *outputTarget) writeIdentityInfo(identity *Identity, privateExports bool) error {
 	var publicKey [64]byte
 	copy(publicKey[0:32], identity.X25519Public[:])
 	copy(publicKey[32:64], identity.Ed25519Public[:])
@@ -674,7 +682,7 @@ func writeIdentityInfo(identity *Identity, identityPath, infoPath string, privat
 	fmt.Fprintf(&info, "  X25519 Public:  %s\n", hex.EncodeToString(identity.X25519Public[:]))
 	fmt.Fprintf(&info, "  Ed25519 Public: %s\n", hex.EncodeToString(identity.Ed25519Public[:]))
 	fmt.Fprintf(&info, "  Combined:       %s\n\n", hex.EncodeToString(publicKey[:]))
-	fmt.Fprintf(&info, "Private identity file: %q\n", identityPath)
+	fmt.Fprintf(&info, "Private identity file: %q\n", o.path)
 	if !privateExports {
 		fmt.Fprintln(&info, "This metadata file contains public information only.")
 	}
@@ -714,78 +722,86 @@ func writeIdentityInfo(identity *Identity, identityPath, infoPath string, privat
 	if privateExports {
 		defer wipeBytes(info.Bytes())
 	}
-	return writeFileSafely(infoPath, info.Bytes(), 0o600)
+	return o.writeFile(o.name+".txt", info.Bytes(), 0o600, o.root.Link, false)
 }
 
-func preflightOutputTarget(path string) error {
-	if err := validateOutputTarget(path); err != nil {
-		return err
-	}
+// outputTarget holds the directory open from preflight through publication. All
+// filesystem mutations use relative names within this root, including cleanup.
+// The directory must still be trusted: a root does not remove another user's
+// permission to alter its entries.
+type outputTarget struct {
+	root *os.Root
+	path string
+	name string
+}
 
-	dir := filepath.Dir(path)
-	probe, err := os.CreateTemp(dir, ".lxmf-vanity-write-test-*")
+func openOutputTarget(path string) (*outputTarget, error) {
+	if path == "" || strings.HasSuffix(path, string(os.PathSeparator)) {
+		return nil, fmt.Errorf("output path must name a file")
+	}
+	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("output directory %s is not writable: %w", dir, err)
+		return nil, err
 	}
-	probePath := probe.Name()
-	if err := probe.Chmod(0o600); err != nil {
-		probe.Close()
-		os.Remove(probePath)
-		return fmt.Errorf("cannot secure files in output directory %s: %w", dir, err)
+	name := filepath.Base(absolute)
+	if name == "." || !filepath.IsLocal(name) {
+		return nil, fmt.Errorf("invalid output filename %q", name)
 	}
-	if err := probe.Close(); err != nil {
-		os.Remove(probePath)
-		return fmt.Errorf("output directory probe failed: %w", err)
-	}
-	if err := os.Remove(probePath); err != nil {
-		return fmt.Errorf("could not remove output directory probe %s: %w", probePath, err)
-	}
-	return nil
-}
-
-func validateOutputTarget(path string) error {
-	if path == "" {
-		return fmt.Errorf("output path must not be empty")
-	}
-	dir := filepath.Dir(path)
-	info, err := os.Stat(dir)
+	root, err := os.OpenRoot(filepath.Dir(absolute))
 	if err != nil {
-		return fmt.Errorf("output directory %s is not accessible: %w", dir, err)
+		return nil, fmt.Errorf("open output directory: %w", err)
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("output directory %s is not a directory", dir)
-	}
-	if err := ensureDoesNotExist(path); err != nil {
-		return err
-	}
-	if err := ensureDoesNotExist(path + ".txt"); err != nil {
-		return err
-	}
-	return nil
+	return &outputTarget{root: root, path: absolute, name: name}, nil
 }
 
-func ensureDoesNotExist(path string) error {
-	if _, err := os.Lstat(path); err == nil {
-		return fmt.Errorf("%s already exists; refusing to overwrite", path)
+func (o *outputTarget) preflight() error {
+	for _, name := range []string{o.name, o.name + ".txt"} {
+		if err := o.ensureDoesNotExist(name); err != nil {
+			return err
+		}
+	}
+	// Exercise the longest temporary filename too, before spending time mining.
+	probe, name, err := o.createTemp(o.name + ".txt")
+	if err != nil {
+		return fmt.Errorf("output directory is not writable: %w", err)
+	}
+	chmodErr := probe.Chmod(0o600)
+	closeErr := probe.Close()
+	removeErr := o.root.Remove(name)
+	if err := errors.Join(chmodErr, closeErr, removeErr); err != nil {
+		return err
+	}
+	return o.checkLocation()
+}
+
+func (o *outputTarget) createTemp(base string) (*os.File, string, error) {
+	for range 10 {
+		name := base + ".tmp-" + rand.Text()
+		file, err := o.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		return file, name, err
+	}
+	return nil, "", fmt.Errorf("could not allocate an exclusive temporary file")
+}
+
+func (o *outputTarget) ensureDoesNotExist(name string) error {
+	if _, err := o.root.Lstat(name); err == nil {
+		return fmt.Errorf("%s already exists; refusing to overwrite", filepath.Join(o.root.Name(), name))
 	} else if !os.IsNotExist(err) {
 		return err
 	}
 	return nil
 }
 
-// writeFileSafely prefers atomic no-replace publication through a same-directory
-// hard link. Filesystems without hard-link support fall back to an exclusive
-// create, which preserves no-overwrite behavior but cannot provide crash atomicity.
-func writeFileSafely(path string, data []byte, mode os.FileMode) error {
-	return writeFileSafelyWithLinkPolicy(path, data, mode, os.Link, false)
-}
-
-func writeFileSafelyRecoverable(path string, data []byte, mode os.FileMode) error {
-	return writeFileSafelyWithLinkPolicy(path, data, mode, os.Link, true)
-}
-
-func writeFileSafelyWithLink(path string, data []byte, mode os.FileMode, link func(string, string) error) error {
-	return writeFileSafelyWithLinkPolicy(path, data, mode, link, false)
+func (o *outputTarget) checkLocation() error {
+	original, originalErr := o.root.Stat(".")
+	current, currentErr := os.Stat(o.root.Name())
+	if originalErr != nil || currentErr != nil || !os.SameFile(original, current) {
+		return fmt.Errorf("output directory %q moved or was replaced; output and recovery filenames refer to the originally opened directory, not its replacement", o.root.Name())
+	}
+	return nil
 }
 
 type recoverableWriteError struct {
@@ -802,19 +818,17 @@ func (e *recoverableWriteError) Unwrap() error {
 	return e.cause
 }
 
-func writeFileSafelyWithLinkPolicy(path string, data []byte, mode os.FileMode, link func(string, string) error, preserveCompleteTemp bool) error {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-
-	file, err := os.CreateTemp(dir, base+".tmp-*")
+// writeFile prefers atomic no-replace hard-link publication. The exclusive
+// fallback preserves no-overwrite semantics but is not crash-atomic.
+func (o *outputTarget) writeFile(path string, data []byte, mode os.FileMode, link func(string, string) error, preserveCompleteTemp bool) error {
+	file, tempPath, err := o.createTemp(path)
 	if err != nil {
 		return err
 	}
-	tempPath := file.Name()
 	removeTemp := true
 	defer func() {
 		if removeTemp {
-			_ = os.Remove(tempPath)
+			_ = o.root.Remove(tempPath)
 		}
 	}()
 
@@ -836,44 +850,44 @@ func writeFileSafelyWithLinkPolicy(path string, data []byte, mode os.FileMode, l
 
 	linkErr := link(tempPath, path)
 	if linkErr == nil {
-		if err := os.Remove(tempPath); err != nil {
+		if err := o.root.Remove(tempPath); err != nil {
 			removeTemp = false
-			syncDirBestEffort(dir)
+			o.syncDirBestEffort()
 			return fmt.Errorf("published %s, but could not remove the temporary hard link %s: %w", path, tempPath, err)
 		}
 		removeTemp = false
-		syncDirBestEffort(dir)
+		o.syncDirBestEffort()
 		return nil
 	}
-	if err := ensureDoesNotExist(path); err != nil {
+	if err := o.ensureDoesNotExist(path); err != nil {
 		if preserveCompleteTemp {
 			removeTemp = false
-			syncDirBestEffort(dir)
-			return &recoverableWriteError{target: path, recoveryPath: tempPath, cause: errors.Join(linkErr, err)}
+			o.syncDirBestEffort()
+			return &recoverableWriteError{target: path, recoveryPath: filepath.Join(o.root.Name(), tempPath), cause: errors.Join(linkErr, err)}
 		}
 		return err
 	}
 
-	if err := writeFileExclusive(path, data, mode); err != nil {
+	if err := o.writeFileExclusive(path, data, mode); err != nil {
 		if preserveCompleteTemp {
 			removeTemp = false
-			syncDirBestEffort(dir)
-			return &recoverableWriteError{target: path, recoveryPath: tempPath, cause: errors.Join(linkErr, err)}
+			o.syncDirBestEffort()
+			return &recoverableWriteError{target: path, recoveryPath: filepath.Join(o.root.Name(), tempPath), cause: errors.Join(linkErr, err)}
 		}
 		return fmt.Errorf("atomic publication unavailable (%v); exclusive fallback failed: %w", linkErr, err)
 	}
-	if err := os.Remove(tempPath); err != nil {
+	if err := o.root.Remove(tempPath); err != nil {
 		removeTemp = false
-		syncDirBestEffort(dir)
+		o.syncDirBestEffort()
 		return fmt.Errorf("published %s through the exclusive fallback, but could not remove complete temporary file %s: %w", path, tempPath, err)
 	}
 	removeTemp = false
-	syncDirBestEffort(dir)
+	o.syncDirBestEffort()
 	return nil
 }
 
-func writeFileExclusive(path string, data []byte, mode os.FileMode) (err error) {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+func (o *outputTarget) writeFileExclusive(path string, data []byte, mode os.FileMode) (err error) {
+	file, err := o.root.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		if os.IsExist(err) {
 			return fmt.Errorf("%s already exists; refusing to overwrite", path)
@@ -885,7 +899,7 @@ func writeFileExclusive(path string, data []byte, mode os.FileMode) (err error) 
 	defer func() {
 		if !complete {
 			file.Close()
-			os.Remove(path)
+			o.root.Remove(path)
 		}
 	}()
 
@@ -905,8 +919,8 @@ func writeFileExclusive(path string, data []byte, mode os.FileMode) (err error) 
 	return nil
 }
 
-func syncDirBestEffort(dir string) {
-	file, err := os.Open(dir)
+func (o *outputTarget) syncDirBestEffort() {
+	file, err := o.root.Open(".")
 	if err != nil {
 		return
 	}
