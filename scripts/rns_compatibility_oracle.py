@@ -1,134 +1,148 @@
 #!/usr/bin/env python3
-"""Generate or verify the deterministic RNS 1.4.2 compatibility fixture."""
+"""Check deterministic identity vectors and CLI interoperability against RNS.
+
+Version/provenance pins belong to the CI installation, not to the expected
+cryptographic bytes. All private inputs in this fixture are PUBLIC TEST DATA.
+"""
 
 import argparse
-import difflib
+import contextlib
 import hashlib
+import io
 import json
-import sys
+import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import verify
+
+MESSAGE = b"lxmf-vanity cross-language compatibility probe"
+PEER_PRIVATE = bytes([0x42]) * 32
 
 
-EXPECTED_RNS_VERSION = "1.4.2"
-RNS_REFERENCE_COMMIT = "b48b96e61676504e0a4e527b33b9a0b4495c6872"
-RAW_X25519_INPUT = bytes.fromhex(
-    "070102030405060708090a0b0c0d0e0f"
-    "101112131415161718191a1b1c1d1edf"
-)
-ED25519_SEED = bytes.fromhex(
-    "202122232425262728292a2b2c2d2e2f"
-    "303132333435363738393a3b3c3d3e3f"
-)
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
 
 
-def clamp_x25519(raw):
-    canonical = bytearray(raw)
-    canonical[0] &= 248
-    canonical[31] &= 127
-    canonical[31] |= 64
-    return bytes(canonical)
+def candidate_inputs():
+    original = json.loads((Path(__file__).resolve().parent.parent / "testdata/rns-1.4.2-golden.json").read_text())
+    yield bytes(64)
+    yield bytes([255]) * 64
+    yield bytes.fromhex(original["raw_candidate_input"])
+    for i in range(64):
+        raw = bytearray(64)
+        raw[i] = 1
+        yield bytes(raw)
+    for i in range(64):
+        yield hashlib.sha512(b"PUBLIC LXMF TEST VECTOR" + bytes([i])).digest()
 
 
-def build_fixture():
-    try:
-        import RNS
-    except ImportError as exc:
-        raise RuntimeError("RNS 1.4.2 is required to run the compatibility oracle") from exc
-
-    actual_version = getattr(RNS, "__version__", "unknown")
-    if actual_version != EXPECTED_RNS_VERSION:
-        raise RuntimeError(
-            f"expected RNS {EXPECTED_RNS_VERSION}, found {actual_version}"
-        )
-
-    canonical_x25519 = clamp_x25519(RAW_X25519_INPUT)
-    canonical_private = canonical_x25519 + ED25519_SEED
-    canonical_identity = RNS.Identity.from_bytes(canonical_private)
-    if canonical_identity is None:
-        raise RuntimeError("RNS rejected the canonical deterministic identity")
-
-    unmasked_private = RAW_X25519_INPUT + ED25519_SEED
-    unmasked_identity = RNS.Identity.from_bytes(unmasked_private)
-    if unmasked_identity is None:
-        raise RuntimeError("RNS rejected the unmasked round-trip test identity")
-
-    canonical_address = RNS.Destination.hash(
-        canonical_identity, "lxmf", "delivery"
-    )
-    unmasked_address = RNS.Destination.hash(
-        unmasked_identity, "lxmf", "delivery"
-    )
-    public_key = canonical_identity.get_public_key()
-
-    return {
-        "rns_version": actual_version,
-        "rns_reference_commit": RNS_REFERENCE_COMMIT,
-        "raw_candidate_input": unmasked_private.hex(),
-        "x25519_private": canonical_x25519.hex(),
-        "x25519_public": public_key[:32].hex(),
-        "ed25519_seed": ED25519_SEED.hex(),
-        "ed25519_public": public_key[32:].hex(),
-        "identity_hash": canonical_identity.hash.hex(),
-        "lxmf_name_hash": hashlib.sha256(b"lxmf.delivery").digest()[:10].hex(),
-        "lxmf_address": canonical_address.hex(),
-        "canonical_private_roundtrip": (
-            canonical_identity.get_private_key() == canonical_private
-        ),
-        "unmasked_private_roundtrip_preserved": (
-            unmasked_identity.get_private_key() == unmasked_private
-        ),
-        "unmasked_and_canonical_addresses_equal": (
-            unmasked_address == canonical_address
-        ),
-    }
+def build_fixture(RNS):
+    vectors = []
+    peer = RNS.Cryptography.X25519PrivateKey.from_private_bytes(PEER_PRIVATE).public_key()
+    for index, raw in enumerate(candidate_inputs()):
+        private = bytearray(raw)
+        private[0] &= 248
+        private[31] = (private[31] & 127) | 64
+        private = bytes(private)
+        identity = RNS.Identity.from_bytes(private)
+        unmasked = RNS.Identity.from_bytes(raw)
+        require(identity is not None and unmasked is not None, f"vector {index}: reference rejected input")
+        require(identity.get_private_key() == private, f"vector {index}: masked private round-trip")
+        require(unmasked.get_private_key() == raw, f"vector {index}: raw private round-trip")
+        require(identity.get_public_key() == unmasked.get_public_key(), f"vector {index}: raw/masked public keys")
+        address = RNS.Destination.hash(identity, "lxmf", "delivery")
+        require(address == RNS.Destination.hash_from_name_and_identity("lxmf.delivery", identity), f"vector {index}: destination APIs disagree")
+        # Only networking is disabled: execute the real constructor and hashing.
+        with patch.object(RNS.Transport, "register_destination"):
+            destination = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, "lxmf", "delivery")
+        require(destination.hash == address, f"vector {index}: destination constructor")
+        signature = identity.sign(MESSAGE)
+        public = RNS.Identity(create_keys=False)
+        public.load_public_key(identity.get_public_key())
+        require(public.validate(signature, MESSAGE), f"vector {index}: signature round-trip")
+        require(identity.decrypt(public.encrypt(MESSAGE)) == MESSAGE, f"vector {index}: encryption round-trip")
+        vectors.append({
+            "raw": raw.hex(), "private": private.hex(), "public": identity.get_public_key().hex(),
+            "hash": identity.hash.hex(), "address": address.hex(), "signature": signature.hex(),
+            "shared": identity.prv.exchange(peer).hex(),
+        })
+    return {"message": MESSAGE.decode("ascii"), "peer_private": PEER_PRIVATE.hex(), "vectors": vectors}
 
 
-def encoded_fixture():
-    return json.dumps(build_fixture(), indent=2, sort_keys=True) + "\n"
+def check_cli(RNS, binary, provider):
+    binary = str(binary.resolve())
+    repository = str(Path(__file__).resolve().parent.parent)
+    bootstrap = f"import sys; sys.path.insert(0, {repository!r}); import verify; verify.load_reticulum({provider!r}); from RNS.Utilities.rnid import main; main()"
+    for exports in (False, True):
+        with tempfile.TemporaryDirectory(prefix="lxmf-compat-") as directory:
+            path = Path(directory) / "identity"
+            args = [binary, "--prefix", "a", "--postfix", "b", "--workers", "2", "--out", str(path)]
+            if os.name == "nt":
+                args.append("--allow-inherited-windows-acl")
+            if exports:
+                args.append("--include-private-exports")
+            subprocess.run(args, check=True, capture_output=True, timeout=30)
+            raw = verify.read_limited_file(path, 64)
+            require(len(raw) == 64, "CLI saved an invalid private identity length")
+            identity = RNS.Identity.from_file(str(path))
+            require(identity is not None and identity.get_private_key() == raw, "RNS file round-trip failed")
+            address = RNS.Destination.hash(identity, "lxmf", "delivery")
+            require(address.hex().startswith("a") and address.hex().endswith("b"), "CLI vanity pattern mismatch")
+            with contextlib.redirect_stdout(io.StringIO()):
+                args = argparse.Namespace(identity_file=str(path), provider=provider, expect_rns_version=None, manual_only=False)
+                require(verify.verify_identity(args) == 0, "CLI metadata/reference verification failed")
+            imports = [["-i", str(path)]]
+            if exports:
+                fields, _ = verify.parse_metadata(path.with_suffix(".txt").read_text(encoding="utf-8"))
+                imports += [["-M", fields[verify.BASE64_LABEL], "-b"], ["-M", fields[verify.BASE32_LABEL], "-B"]]
+            for arguments in imports:
+                result = subprocess.run([sys.executable, "-c", bootstrap, *arguments, "-N", "-H", "lxmf.delivery"], capture_output=True, text=True, timeout=30)
+                require(result.returncode == 0 and address.hex() in result.stdout, "rnid file/export import mismatch")
+    print("CLI private-file, metadata, vanity pattern and rnid export round-trips passed")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     output = parser.add_mutually_exclusive_group()
-    output.add_argument("--check", metavar="PATH", type=Path)
-    output.add_argument("--write", metavar="PATH", type=Path)
+    output.add_argument("--check", type=Path)
+    output.add_argument("--write", type=Path)
+    parser.add_argument("--binary", type=Path, help="also test a compiled Go CLI")
+    parser.add_argument("--expect-rns-version", help="optional exact CI version assertion")
+    parser.add_argument("--provider", choices=("auto", "pyca", "internal"), default="auto")
     args = parser.parse_args()
-
     try:
-        generated = encoded_fixture()
-    except Exception as exc:
-        print(f"oracle error: {exc}", file=sys.stderr)
-        return 2
-
-    if args.check:
-        existing = args.check.read_text(encoding="utf-8")
-        if existing == generated:
-            print(
-                f"RNS {EXPECTED_RNS_VERSION} compatibility fixture matches {args.check}"
-            )
-            return 0
-        print(
-            "".join(
-                difflib.unified_diff(
-                    existing.splitlines(keepends=True),
-                    generated.splitlines(keepends=True),
-                    fromfile=str(args.check),
-                    tofile="generated",
-                )
-            ),
-            file=sys.stderr,
-            end="",
-        )
-        return 1
-
-    if args.write:
-        args.write.write_text(generated, encoding="utf-8")
-        print(f"wrote {args.write}")
+        RNS = verify.load_reticulum(args.provider)
+        version = getattr(RNS, "__version__", "unknown")
+        if args.expect_rns_version:
+            require(version == args.expect_rns_version, f"expected RNS {args.expect_rns_version}, found {version}")
+        print(f"Reference: RNS {version}; {RNS.Cryptography.backend()}; source {RNS.__file__!r}", file=sys.stderr)
+        fixture = build_fixture(RNS)
+        if args.check:
+            expected = json.loads(args.check.read_text(encoding="utf-8"))
+            require(expected == fixture, "cryptographic fixture mismatch (reference version alone is not a mismatch)")
+            print(f"All {len(fixture['vectors'])} deterministic vectors match {args.check}")
+        elif args.write:
+            args.write.write_text(json.dumps(fixture, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            print(f"Wrote public test vectors to {args.write}")
+        elif not args.binary:
+            print(json.dumps(fixture, indent=2, sort_keys=True))
+        if args.binary:
+            check_cli(RNS, args.binary, args.provider)
         return 0
-
-
-    print(generated, end="")
-    return 0
+    except Exception as exc:
+        # Never dump a failed command containing private export arguments.
+        if isinstance(exc, subprocess.SubprocessError):
+            message = "interoperability subprocess failed or timed out"
+        else:
+            message = str(exc)
+        print(f"Oracle failed: {message}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

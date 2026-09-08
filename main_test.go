@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
+	"crypto/ed25519"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -83,6 +85,63 @@ func TestGoldenConstantsMatchPinnedFixture(t *testing.T) {
 	assertFixtureValue(t, "identity hash", fixture.IdentityHash, goldenIdentityHash)
 	assertFixtureValue(t, "name hash", fixture.LXMFNameHash, hex.EncodeToString(lxmfNameHash[:]))
 	assertFixtureValue(t, "LXMF address", fixture.LXMFAddress, goldenLXMFAddress)
+}
+
+func TestReticulumIdentityCorpus(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "rns-identity-vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Message     string
+		PeerPrivate string `json:"peer_private"`
+		Vectors     []struct{ Raw, Private, Public, Hash, Address, Signature, Shared string }
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Vectors) != 131 || fixture.Message == "" {
+		t.Fatal("incomplete compatibility corpus")
+	}
+	peer, err := ecdh.X25519().NewPrivateKey(mustDecodeHex(t, fixture.PeerPrivate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, vector := range fixture.Vectors {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			raw := mustDecodeHex(t, vector.Raw)
+			if len(raw) != identityPrivateKeySize {
+				t.Fatal("invalid candidate size")
+			}
+			var input [64]byte
+			copy(input[:], raw)
+			var identity Identity
+			var public [64]byte
+			material := newAddressHashMaterial()
+			if err := deriveCandidate(&identity, &input, &public, &material); err != nil {
+				t.Fatal(err)
+			}
+			private := append(append([]byte{}, identity.X25519Private[:]...), identity.Ed25519Seed[:]...)
+			assertHexEqual(t, "private", private, vector.Private)
+			assertHexEqual(t, "public", public[:], vector.Public)
+			assertHexEqual(t, "identity hash", identity.Hash[:], vector.Hash)
+			assertHexEqual(t, "destination", identity.Address[:], vector.Address)
+			signature := ed25519.Sign(ed25519.NewKeyFromSeed(identity.Ed25519Seed[:]), []byte(fixture.Message))
+			assertHexEqual(t, "deterministic signature", signature, vector.Signature)
+			if !ed25519.Verify(identity.Ed25519Public[:], []byte(fixture.Message), mustDecodeHex(t, vector.Signature)) {
+				t.Fatal("reference signature did not verify")
+			}
+			key, err := ecdh.X25519().NewPrivateKey(identity.X25519Private[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			shared, err := key.ECDH(peer.PublicKey())
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertHexEqual(t, "X25519 agreement", shared, vector.Shared)
+		})
+	}
 }
 
 func assertFixtureValue(t *testing.T, name, got, want string) {

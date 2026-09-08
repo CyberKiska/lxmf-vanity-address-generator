@@ -2,6 +2,7 @@
 
 BINARY ?= lxmf-vanity
 PYTHON ?= python3
+RNS_FLAGS ?=
 BUILDFLAGS ?= -trimpath -buildvcs=false
 BUILDMODE ?= -buildmode=pie
 LDFLAGS ?= -s -w -buildid=
@@ -64,15 +65,15 @@ compatibility: build
 	@set -eu; tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	./$(BINARY) --prefix 0 --workers 2 --out "$$tmpdir/identity"; \
-	$(PYTHON) scripts/rns_compatibility_oracle.py --check testdata/rns-1.4.2-golden.json; \
-	$(PYTHON) verify.py "$$tmpdir/identity"
+	$(PYTHON) scripts/rns_compatibility_oracle.py --check testdata/rns-identity-vectors.json --binary "$(BINARY)" $(RNS_FLAGS); \
+	$(PYTHON) verify.py "$$tmpdir/identity" $(RNS_FLAGS)
 
-# Check or regenerate the deterministic fixture using exactly RNS 1.4.2
+# Check or regenerate deterministic bytes using the installed reference.
 oracle:
-	$(PYTHON) scripts/rns_compatibility_oracle.py --check testdata/rns-1.4.2-golden.json
+	$(PYTHON) scripts/rns_compatibility_oracle.py --check testdata/rns-identity-vectors.json $(RNS_FLAGS)
 
 regenerate-golden:
-	$(PYTHON) scripts/rns_compatibility_oracle.py --write testdata/rns-1.4.2-golden.json
+	$(PYTHON) scripts/rns_compatibility_oracle.py --write testdata/rns-identity-vectors.json $(RNS_FLAGS)
 
 # Install to system
 install: build
@@ -89,15 +90,15 @@ help:
 	@echo "  build      - Build the binary for current platform"
 	@echo "  build-debug - Build a binary with debug symbols"
 	@echo "  build-all  - Build binaries for all platforms"
-	@echo "  clean      - Remove build artifacts and test files"
+	@echo "  clean      - Remove known build artifacts; preserve identities"
 	@echo "  test       - Run unit tests"
 	@echo "  check      - Run tests, race detector, and vet"
 	@echo "  fuzz       - Run the native address-matcher fuzz target"
 	@echo "  smoke      - Run quick functionality tests"
 	@echo "  bench      - Run targeted benchmarks"
 	@echo "  compatibility - Generate and verify an identity with installed RNS"
-	@echo "  oracle     - Check the deterministic fixture with RNS 1.4.2"
-	@echo "  regenerate-golden - Regenerate the deterministic RNS 1.4.2 fixture"
+	@echo "  oracle     - Check the deterministic corpus with installed RNS"
+	@echo "  regenerate-golden - Regenerate deterministic RNS test vectors"
 	@echo "  install    - Install to /usr/local/bin"
 	@echo "  deps       - Download and tidy dependencies"
 	@echo "  help       - Show this help message"
