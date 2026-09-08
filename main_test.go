@@ -415,6 +415,44 @@ func TestSaveIdentityRejectsInconsistentDerivedFields(t *testing.T) {
 	}
 }
 
+func TestSaveIdentityPreservesWinnerAfterLateCollision(t *testing.T) {
+	for _, suffix := range []string{"", ".txt"} {
+		t.Run("collision"+suffix, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "identity")
+			if err := preflightOutputTarget(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path+suffix, []byte("existing"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			identity := goldenIdentity(t)
+			err := saveIdentity(&identity, path, false)
+			if err == nil {
+				t.Fatal("expected collision error")
+			}
+			var recovery *recoverableWriteError
+			savedPath := path
+			if suffix == "" {
+				if !errors.As(err, &recovery) {
+					t.Fatalf("expected recoverable identity: %v", err)
+				}
+				savedPath = recovery.recoveryPath
+			} else if !strings.Contains(err.Error(), "identity was saved") {
+				t.Fatalf("expected explicit partial success: %v", err)
+			}
+			data, readErr := os.ReadFile(savedPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			assertHexEqual(t, "saved private key", data, goldenX25519Private+goldenEd25519Seed)
+			original, readErr := os.ReadFile(path + suffix)
+			if readErr != nil || string(original) != "existing" {
+				t.Fatalf("collision target changed: %v", readErr)
+			}
+		})
+	}
+}
+
 func TestValidateOutputTargetRejectsExistingOutputBeforeSearch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "identity")

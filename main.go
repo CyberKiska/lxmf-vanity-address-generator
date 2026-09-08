@@ -97,6 +97,9 @@ func main() {
 
 func run() error {
 	flag.Parse()
+	if flag.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments %q; all options must use flags", flag.Args())
+	}
 
 	prefix = strings.ToLower(prefix)
 	postfix = strings.ToLower(postfix)
@@ -187,6 +190,13 @@ func run() error {
 	}
 	defer wipeIdentitySecrets(&identity)
 
+	// Persist the expensive result before writing success output to a pipe that
+	// might have been closed by its reader.
+	if !dryRun {
+		if err := saveIdentity(&identity, outPath, includePrivateExports); err != nil {
+			return err
+		}
+	}
 	addrHex := hex.EncodeToString(identity.Address[:])
 	fmt.Printf("\n✓ Found matching address: %s\n", addrHex)
 	fmt.Printf("  Total attempts: %d\n", search.attempts.Load())
@@ -195,9 +205,6 @@ func run() error {
 		return nil
 	}
 
-	if err := saveIdentity(&identity, outPath, includePrivateExports); err != nil {
-		return err
-	}
 	fmt.Printf("  Saved to: %s\n", outPath)
 	if includePrivateExports {
 		fmt.Fprintf(os.Stderr, "Warning: %s contains reversible private-key exports and must be protected like the identity file.\n", outPath+".txt")
@@ -596,9 +603,12 @@ func saveIdentity(identity *Identity, path string, privateExports bool) error {
 	if err := validateIdentityConsistency(identity); err != nil {
 		return err
 	}
-	if err := validateOutputTarget(path); err != nil {
-		return err
+	if path == "" {
+		return fmt.Errorf("output path must not be empty")
 	}
+	// The preflight checks target availability before searching. At save time,
+	// let the no-replace writer preserve a complete recovery file on collision.
+	// A metadata collision must not prevent saving the primary identity.
 
 	var privateKey [identityPrivateKeySize]byte
 	defer wipeBytes(privateKey[:])
@@ -688,9 +698,13 @@ func writeIdentityInfo(identity *Identity, identityPath, infoPath string, privat
 		fmt.Fprintln(&info)
 		fmt.Fprintln(&info, "WARNING: Reversible private identity exports follow. Protect this file like the identity file.")
 		fmt.Fprintln(&info, "Reticulum URL-safe Base64 private identity:")
-		fmt.Fprintf(&info, "  %s\n", encodedBase64[:])
+		info.WriteString("  ")
+		info.Write(encodedBase64[:])
+		info.WriteByte('\n')
 		fmt.Fprintln(&info, "Reticulum Base32 private identity:")
-		fmt.Fprintf(&info, "  %s\n", encodedBase32[:])
+		info.WriteString("  ")
+		info.Write(encodedBase32[:])
+		info.WriteByte('\n')
 	}
 
 	fmt.Fprintln(&info)

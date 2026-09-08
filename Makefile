@@ -25,19 +25,22 @@ build-all:
 
 # Clean build artifacts
 clean:
-	rm -f lxmf-vanity lxmf-vanity-* identity identity.txt test_identity*
+	rm -f -- lxmf-vanity lxmf-vanity-debug lxmf-vanity.exe \
+		lxmf-vanity-linux-amd64 lxmf-vanity-linux-arm64 \
+		lxmf-vanity-darwin-amd64 lxmf-vanity-darwin-arm64 \
+		lxmf-vanity-windows-amd64.exe lxmf-vanity-windows-arm64.exe
 
 # Run unit tests
 test:
 	go test ./...
-	$(PYTHON) -m unittest verify_test.py
+	$(PYTHON) -m unittest discover -p '*_test.py'
 
 # Run the full local Go validation suite
 check:
 	go test ./...
 	go test -race ./...
 	go vet ./...
-	$(PYTHON) -m unittest verify_test.py
+	$(PYTHON) -m unittest discover -p '*_test.py'
 
 # Run the native matcher fuzz target for a bounded interval
 fuzz:
@@ -58,7 +61,7 @@ bench:
 
 # End-to-end check using the installed RNS package
 compatibility: build
-	@tmpdir="$$(mktemp -d)"; \
+	@set -eu; tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	./$(BINARY) --prefix 0 --workers 2 --out "$$tmpdir/identity"; \
 	$(PYTHON) scripts/rns_compatibility_oracle.py --check testdata/rns-1.4.2-golden.json; \
