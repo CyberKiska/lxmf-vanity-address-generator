@@ -170,18 +170,20 @@ func run() error {
 
 	runContext := searchContext
 	stopBenchmark := func() {}
+	startTime := time.Now()
 	if benchmarkDuration > 0 {
 		runContext, stopBenchmark = context.WithTimeout(searchContext, benchmarkDuration)
 	}
 	identity, err := search.run(runContext, workers)
+	elapsed := time.Since(startTime)
 	stopBenchmark()
 	stopProgress()
 	<-progressDone
 	if benchmarkDuration > 0 {
 		if errors.Is(err, context.DeadlineExceeded) {
 			attempts := search.attempts.Load()
-			avgRate := uint64(float64(attempts) / benchmarkDuration.Seconds())
-			fmt.Printf("\nBenchmark complete: %s attempts (%s/s average)\n", formatNumber(attempts), formatNumber(avgRate))
+			avgRate := attemptsPerSecond(attempts, elapsed)
+			fmt.Printf("\nBenchmark complete: %s attempts in %s (%s/s average)\n", formatNumber(attempts), elapsed.Round(time.Microsecond), formatNumber(avgRate))
 			return nil
 		}
 		if errors.Is(err, context.Canceled) {
@@ -325,6 +327,7 @@ func (s *searcher) run(parent context.Context, workerCount int) (Identity, error
 	outcomes := make(chan searchOutcome, 1)
 	var publishOnce sync.Once
 	publish := func(outcome searchOutcome) {
+		defer wipeIdentitySecrets(&outcome.identity)
 		publishOnce.Do(func() {
 			outcomes <- outcome
 			cancel()
@@ -338,12 +341,19 @@ func (s *searcher) run(parent context.Context, workerCount int) (Identity, error
 	}
 
 	var outcome searchOutcome
+	defer wipeIdentitySecrets(&outcome.identity)
 	select {
 	case outcome = <-outcomes:
 	case <-parent.Done():
 		cancel()
 		workersDone.Wait()
-		return Identity{}, parent.Err()
+		// An in-flight candidate can finish during cancellation. Preserve its
+		// published result instead of discarding a completed private identity.
+		select {
+		case outcome = <-outcomes:
+		default:
+			return Identity{}, parent.Err()
+		}
 	}
 
 	cancel()
@@ -571,22 +581,31 @@ func monitorProgress(ctx context.Context, attempts *atomic.Uint64) {
 
 	lastAttempts := uint64(0)
 	startTime := time.Now()
+	lastTime := startTime
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			now := time.Now()
 			current := attempts.Load()
-			rate := current - lastAttempts
+			rate := attemptsPerSecond(current-lastAttempts, now.Sub(lastTime))
 			lastAttempts = current
-			elapsed := time.Since(startTime).Seconds()
-			avgRate := float64(current) / elapsed
+			lastTime = now
+			avgRate := attemptsPerSecond(current, now.Sub(startTime))
 			fmt.Printf("\r  Speed: %s/s (avg: %s/s) | Total: %s        ",
 				formatNumber(rate),
-				formatNumber(uint64(avgRate)),
+				formatNumber(avgRate),
 				formatNumber(current))
 		}
 	}
+}
+
+func attemptsPerSecond(attempts uint64, elapsed time.Duration) uint64 {
+	if elapsed <= 0 {
+		return 0
+	}
+	return uint64(float64(attempts) / elapsed.Seconds())
 }
 
 func formatNumber(n uint64) string {

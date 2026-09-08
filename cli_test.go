@@ -68,3 +68,15 @@ func TestCLIDryRunCreatesNoFiles(t *testing.T) {
 		t.Fatalf("dry run created files: %v (%v)", entries, err)
 	}
 }
+
+func TestCLIBenchmarkReportsElapsedTimeWithoutFiles(t *testing.T) {
+	dir := t.TempDir()
+	output, err := runCLI(t, dir, "--benchmark", "20ms", "--workers", "1")
+	if err != nil || !strings.Contains(string(output), " attempts in ") || !strings.Contains(string(output), "/s average)") {
+		t.Fatalf("benchmark failed: %v: %s", err, output)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("benchmark created files: %v (%v)", entries, err)
+	}
+}
