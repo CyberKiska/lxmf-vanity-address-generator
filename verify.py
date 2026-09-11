@@ -1,307 +1,245 @@
 #!/usr/bin/env python3
-"""
-Verification script to check compatibility between generated identities
-and the reference Reticulum implementation.
+"""Verify a 64-byte private identity against the installed Reticulum reference.
 
-Features:
-- Basic file format verification (size, structure)
-- Comparison with address/hash metadata in .txt file if available
-- Fail-closed reference verification of private/public/hash/address material
-
-Requirements:
-    pip install cryptography rns
-
-Usage:
-    python3 verify.py <identity_file>
-    python3 verify.py --manual-only <identity_file>
-
-Examples:
-    python3 verify.py my_identity                   # Requires RNS; verifies .txt if present
-    python3 verify.py --manual-only my_identity     # Structural checks, no compatibility claim
-    python3 verify.py path/to/identity_file         # Verify any identity file
-    python3 verify.py my_identity > results.txt     # Save output to file
+Install cryptography and rns. Use --expect-rns-version for an optional CI pin;
+--manual-only explicitly omits reference verification. Python is never needed
+by the Go search executable.
 """
 
 import argparse
 import base64
 import hashlib
+import importlib.util
 import os
+import stat
 import sys
 
 
-EXPECTED_RNS_VERSION = "1.4.2"
+PRIVATE_SIZE = 64
+MAX_METADATA_SIZE = 64 * 1024
+PUBLIC_LABEL = "This metadata file contains public information only."
+PRIVATE_WARNING = "WARNING: Reversible private identity exports follow. Protect this file like the identity file."
+BASE64_LABEL = "Reticulum URL-safe Base64 private identity"
+BASE32_LABEL = "Reticulum Base32 private identity"
+
+
+def read_limited_file(filepath, limit):
+    """Read only a bounded regular file; do not block opening Unix FIFOs."""
+    fd = os.open(filepath, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as file:
+        info = os.fstat(file.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("input must be a regular file")
+        if info.st_size > limit:
+            raise ValueError(f"input exceeds the {limit}-byte size limit")
+        data = file.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError(f"input exceeds the {limit}-byte size limit")
+        return data
 
 
 def load_identity_binary(filepath):
-    """Load identity from binary file (64 bytes private key)"""
-    with open(filepath, 'rb') as f:
-        data = f.read()
-
-    if len(data) != 64:
-        raise ValueError(f"Identity file must be 64 bytes (private key), got {len(data)}")
-
-    # Private key format: X25519_priv (32) + Ed25519_seed (32)
-    x25519_private = data[0:32]
-    ed25519_seed = data[32:64]
-
-    return {
-        'x25519_private': x25519_private,
-        'ed25519_seed': ed25519_seed,
-    }
+    data = read_limited_file(filepath, PRIVATE_SIZE)
+    if len(data) != PRIVATE_SIZE:
+        raise ValueError(f"identity must be exactly {PRIVATE_SIZE} bytes, got {len(data)}")
+    return {"x25519_private": data[:32], "ed25519_seed": data[32:]}
 
 
 def compute_lxmf_address(identity):
-    """Compute LXMF address from identity (manual calculation matching RNS.Destination.hash)"""
     from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
     from cryptography.hazmat.primitives import serialization
 
-    # Reconstruct public keys from private keys
-    x25519_priv_key = x25519.X25519PrivateKey.from_private_bytes(identity['x25519_private'])
-    x25519_pub = x25519_priv_key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw
+    x_key = x25519.X25519PrivateKey.from_private_bytes(identity["x25519_private"])
+    e_key = ed25519.Ed25519PrivateKey.from_private_bytes(identity["ed25519_seed"])
+    public = b"".join(
+        key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        for key in (x_key, e_key)
     )
-
-    ed25519_priv_key = ed25519.Ed25519PrivateKey.from_private_bytes(identity['ed25519_seed'])
-    ed25519_pub = ed25519_priv_key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw
-    )
-
-    # Build public key: X25519_pub (32) + Ed25519_pub (32) = 64 bytes
-    public_key = x25519_pub + ed25519_pub
-
-    # Compute identity hash: SHA-256(public_key)[:16]
-    identity_hash = hashlib.sha256(public_key).digest()[:16]
-
-    # Compute name hash: SHA-256("lxmf.delivery")[:10]
+    identity_hash = hashlib.sha256(public).digest()[:16]
     name_hash = hashlib.sha256(b"lxmf.delivery").digest()[:10]
-
-    # Compute destination hash: SHA-256(name_hash + identity_hash)[:16]
-    addr_hash_material = name_hash + identity_hash
-    destination_hash = hashlib.sha256(addr_hash_material).digest()[:16]
-
-    return destination_hash, identity_hash, public_key
+    return hashlib.sha256(name_hash + identity_hash).digest()[:16], identity_hash, public
 
 
-def verify_with_reticulum(filepath, raw_private):
-    """Verify all derived material using the installed Reticulum library."""
-    try:
+def load_reticulum(provider="auto"):
+    if provider == "internal":
+        # RNS chooses its provider at import time using find_spec. Temporarily
+        # hide PyCA from that discovery, without changing any reference crypto.
+        from unittest.mock import patch
+        find_spec = importlib.util.find_spec
+        with patch("importlib.util.find_spec", side_effect=lambda name, *a, **kw: None if name == "cryptography" else find_spec(name, *a, **kw)):
+            import RNS
+    else:
         import RNS
-    except ImportError:
-        return None
+    backend = RNS.Cryptography.backend()
+    if provider == "internal" and backend != "internal":
+        raise ValueError("RNS was already loaded with a different provider; start a fresh process")
+    if provider == "pyca" and "PyCA" not in backend:
+        raise ValueError("the requested RNS PyCA provider is unavailable")
+    return RNS
 
-    identity = RNS.Identity.from_file(filepath)
+
+def verify_with_reticulum(raw_private, provider="auto"):
+    try:
+        RNS = load_reticulum(provider)
+    except ModuleNotFoundError as exc:
+        if exc.name == "RNS":
+            return None
+        raise
+    # Use the already bounded snapshot, avoiding a second, unbounded path read.
+    # Actual from_file interoperability is additionally tested by the CLI oracle.
+    identity = RNS.Identity.from_bytes(raw_private)
     if identity is None:
-        raise ValueError("RNS.Identity.from_file() rejected the identity file")
-
-    probe_message = b"lxmf-vanity RNS 1.4.2 compatibility probe"
-    signature = identity.sign(probe_message)
-    ciphertext = identity.encrypt(probe_message)
-
+        raise ValueError("RNS.Identity.from_bytes() rejected the private identity")
+    message = b"lxmf-vanity compatibility probe"
+    signature = identity.sign(message)
+    public_identity = RNS.Identity(create_keys=False)
+    public_identity.load_public_key(identity.get_public_key())
     return {
         "version": getattr(RNS, "__version__", "unknown"),
+        "provider": RNS.Cryptography.backend(),
+        "source": RNS.__file__,
         "public": identity.get_public_key(),
         "identity_hash": identity.hash,
         "destination_hash": RNS.Destination.hash(identity, "lxmf", "delivery"),
-        "name_destination_hash": RNS.Destination.hash_from_name_and_identity(
-            "lxmf.delivery", identity
-        ),
+        "name_destination_hash": RNS.Destination.hash_from_name_and_identity("lxmf.delivery", identity),
         "private_roundtrip": identity.get_private_key() == raw_private,
-        "signature_roundtrip": identity.validate(signature, probe_message),
-        "encryption_roundtrip": identity.decrypt(ciphertext) == probe_message,
+        "signature_roundtrip": public_identity.validate(signature, message),
+        "encryption_roundtrip": identity.decrypt(public_identity.encrypt(message)) == message,
     }
 
 
+def parse_metadata(content):
+    fields = {}
+    labels = {"Address (LXMF)", "Identity Hash", "Full Specifier", "X25519 Public", "Ed25519 Public", "Combined", BASE64_LABEL, BASE32_LABEL}
+    lines = [line.strip() for line in content.splitlines()]
+    for i, line in enumerate(lines):
+        label, separator, value = line.partition(":")
+        if not separator or label not in labels:
+            continue
+        if label in fields:
+            raise ValueError(f"duplicate metadata field: {label}")
+        if label in (BASE64_LABEL, BASE32_LABEL):
+            if value.strip() or i + 1 == len(lines):
+                raise ValueError("invalid private export field")
+            value = lines[i + 1]
+        fields[label] = value.strip()
+    return fields, lines
+
+
 def verify_txt_file(manual_address, identity_hash, public_key, raw_private, filepath):
-    """Verify address/hash metadata in .txt file if it exists"""
     txt_file = filepath + ".txt"
-    if not os.path.exists(txt_file):
+    try:
+        content = read_limited_file(txt_file, MAX_METADATA_SIZE).decode("utf-8")
+    except FileNotFoundError:
+        if os.path.lexists(txt_file):
+            raise ValueError("metadata is a dangling symlink")
         return None
-
-    print(f"\nComparing with {txt_file}...")
-    with open(txt_file, 'r') as f:
-        content = f.read()
-
-    expected_address = manual_address.hex()
-    expected_identity_hash = identity_hash.hex()
-    txt_address = None
-    txt_identity_hash = None
-
-    for line in content.split('\n'):
-        if line.startswith('Address (LXMF):'):
-            txt_address = line.split(':', 1)[1].strip()
-            print(f"\n{line}")
-        elif line.startswith('Identity Hash:'):
-            txt_identity_hash = line.split(':', 1)[1].strip()
-            print(line)
-
-    address_match = txt_address == expected_address
-    identity_match = txt_identity_hash == expected_identity_hash
-    expected_specifier = (
-        f"<lxmf.delivery.{expected_identity_hash}:{expected_address}>"
-    )
-    expected_public_lines = [
-        f"X25519 Public:  {public_key[:32].hex()}",
-        f"Ed25519 Public: {public_key[32:].hex()}",
-        f"Combined:       {public_key.hex()}",
-    ]
-    public_material_match = all(line in content for line in expected_public_lines)
-    specifier_match = expected_specifier in content
-
-    private_base64 = base64.urlsafe_b64encode(raw_private).decode("ascii")
-    private_base32 = base64.b32encode(raw_private).decode("ascii")
-    public_only = "This metadata file contains public information only." in content
-    private_warning = "WARNING: Reversible private identity exports follow" in content
-    if public_only and not private_warning:
-        sensitivity_match = (
-            private_base64 not in content and private_base32 not in content
-        )
-    elif private_warning and not public_only:
-        sensitivity_match = (
-            private_base64 in content and private_base32 in content
-        )
-    else:
-        sensitivity_match = False
-
-    if address_match:
-        print("✓ Address matches")
-    else:
-        print(f"✗ Address MISMATCH! expected {expected_address}")
-
-    if identity_match:
-        print("✓ Identity hash matches")
-    else:
-        print(f"✗ Identity hash MISMATCH! expected {expected_identity_hash}")
-
-    for label, passed in {
-        "public key metadata": public_material_match,
-        "full destination specifier": specifier_match,
-        "metadata sensitivity label/exports": sensitivity_match,
-    }.items():
-        print(f"{'✓' if passed else '✗'} {label}")
-
-    return all(
-        [
-            address_match,
-            identity_match,
-            public_material_match,
-            specifier_match,
-            sensitivity_match,
-        ]
-    )
+    try:
+        fields, lines = parse_metadata(content)
+        expected = {
+            "Address (LXMF)": manual_address.hex(),
+            "Identity Hash": identity_hash.hex(),
+            "Full Specifier": f"<lxmf.delivery.{identity_hash.hex()}:{manual_address.hex()}>",
+            "X25519 Public": public_key[:32].hex(),
+            "Ed25519 Public": public_key[32:].hex(),
+            "Combined": public_key.hex(),
+        }
+        checks = {label: fields.get(label) == value for label, value in expected.items()}
+        private_base64 = base64.urlsafe_b64encode(raw_private).decode("ascii")
+        private_base32 = base64.b32encode(raw_private).decode("ascii")
+        public_only = lines.count(PUBLIC_LABEL) == 1 and lines.count(PRIVATE_WARNING) == 0
+        private_exports = lines.count(PRIVATE_WARNING) == 1 and lines.count(PUBLIC_LABEL) == 0
+        if public_only:
+            sensitivity = (
+                BASE64_LABEL not in fields and BASE32_LABEL not in fields
+                and all(value not in content for value in (private_base64, private_base32, raw_private.hex()))
+            )
+        elif private_exports:
+            encoded64 = fields.get(BASE64_LABEL, "")
+            encoded32 = fields.get(BASE32_LABEL, "")
+            sensitivity = (
+                encoded64 == private_base64 and encoded32 == private_base32
+                and base64.b64decode(encoded64, altchars=b"-_", validate=True) == raw_private
+                and base64.b32decode(encoded32) == raw_private
+            )
+        else:
+            sensitivity = False
+        checks["metadata sensitivity label/exports"] = sensitivity
+    except ValueError as exc:
+        print(f"  ✗ Invalid metadata: {exc}")
+        return False
+    for name, passed in checks.items():
+        print(f"  {'✓' if passed else '✗'} {name}")
+    return all(checks.values())
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Verify a generated identity against Reticulum"
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("identity_file")
-    parser.add_argument(
-        "--manual-only",
-        action="store_true",
-        help="perform structural/manual checks without claiming Reticulum compatibility",
-    )
-    return parser.parse_args()
+    parser.add_argument("--manual-only", action="store_true", help="omit Reticulum checks; no reference compatibility claim")
+    parser.add_argument("--expect-rns-version", help="optionally require an exact reference version for CI")
+    parser.add_argument("--provider", choices=("auto", "pyca", "internal"), default="auto", help="reference provider to exercise")
+    args = parser.parse_args()
+    if args.manual_only and (args.expect_rns_version or args.provider != "auto"):
+        parser.error("reference version/provider options cannot be used with --manual-only")
+    return args
 
 
 def main():
     args = parse_args()
-    filepath = args.identity_file
-
-    if not os.path.exists(filepath):
-        print(f"Error: File '{filepath}' not found")
-        return 1
-
-    print("=== LXMF Identity File Verification ===\n")
-
-    # Read binary file
-    with open(filepath, 'rb') as f:
-        data = f.read()
-
-    print(f"File: {filepath}")
-    print(f"Size: {len(data)} bytes")
-
-    # Check file size
-    if len(data) != 64:
-        print(f"\n⚠️  WARNING: Expected 64 bytes (private key), got {len(data)}")
-        print("This file may not be compatible with Reticulum!")
-        return 1
-    else:
-        print("✓ Correct size (64 bytes)\n")
-
-    # Load and parse identity
-    print(f"Loading identity from: {filepath}")
-    identity = load_identity_binary(filepath)
-
-    print("\nIdentity private key: loaded (hidden)")
-
-    # Manual calculation
     try:
-        manual_address, identity_hash, public_key = compute_lxmf_address(identity)
+        return verify_identity(args)
+    except (OSError, ValueError) as exc:
+        print(f"Verification failed: {exc}", file=sys.stderr)
+        return 1
     except ImportError as exc:
-        print(f"Error: manual cryptographic checks require the cryptography package: {exc}")
+        print(f"Missing verification dependency: {exc}", file=sys.stderr)
         return 2
-    print(f"\nDerived public keys:")
-    print(f"  X25519 Public:   {public_key[:32].hex()}")
-    print(f"  Ed25519 Public:  {public_key[32:].hex()}")
-    print(f"\nManual calculation:")
-    print(f"  Identity Hash: {identity_hash.hex()}")
-    print(f"  LXMF Address:  {manual_address.hex()}")
 
-    # Verify against .txt file if it exists
-    txt_verification_result = verify_txt_file(
-        manual_address, identity_hash, public_key, data, filepath
-    )
 
+def verify_identity(args):
+    filepath = args.identity_file
+    identity = load_identity_binary(filepath)
+    raw_private = identity["x25519_private"] + identity["ed25519_seed"]
+    address, identity_hash, public_key = compute_lxmf_address(identity)
+    print(f"File: {filepath!r} (64-byte private identity; secret bytes hidden)")
+    print(f"Identity Hash: {identity_hash.hex()}")
+    print(f"LXMF Address: {address.hex()}")
+    metadata_result = verify_txt_file(address, identity_hash, public_key, raw_private, filepath)
     if args.manual_only:
-        print("\n⚠ MANUAL-ONLY MODE: no Reticulum compatibility claim was tested.")
-        if txt_verification_result is False:
-            return 1
-        return 0
-
-    print("\nReticulum reference verification:")
+        print("MANUAL-ONLY MODE: no Reticulum compatibility claim was tested.")
+        return 1 if metadata_result is False else 0
     try:
-        result = verify_with_reticulum(filepath, data)
+        result = verify_with_reticulum(raw_private, args.provider)
     except Exception as exc:
-        print(f"  ✗ Reticulum rejected the identity: {exc}")
+        print(f"Reticulum verification failed: {exc}", file=sys.stderr)
         return 1
-
     if result is None:
-        print("  ✗ Reticulum is not installed; compatibility was NOT verified.")
-        print("    Install the pinned/supported RNS version or use --manual-only explicitly.")
+        print("Reticulum is not installed; compatibility was NOT verified.", file=sys.stderr)
         return 2
-
-    print(f"  RNS Version: {result['version']}")
-    print(f"  LXMF Address: {result['destination_hash'].hex()}")
-
+    print(f"RNS Version: {result['version']}")
+    print(f"RNS Provider: {result['provider']}")
+    print(f"RNS Source: {result['source']!r}")
     checks = {
-        f"RNS version is exactly {EXPECTED_RNS_VERSION}": (
-            result["version"] == EXPECTED_RNS_VERSION
-        ),
         "private identity round-trip": result["private_roundtrip"],
         "public key bytes": result["public"] == public_key,
         "identity hash": result["identity_hash"] == identity_hash,
-        "Destination.hash": result["destination_hash"] == manual_address,
-        "hash_from_name_and_identity": (
-            result["name_destination_hash"] == manual_address
-        ),
+        "Destination.hash": result["destination_hash"] == address,
+        "hash_from_name_and_identity": result["name_destination_hash"] == address,
         "signature round-trip": result["signature_roundtrip"],
         "encryption round-trip": result["encryption_roundtrip"],
-        "metadata": txt_verification_result is not False,
+        "metadata": metadata_result is not False,
     }
-
-    failed = [name for name, passed in checks.items() if not passed]
+    if args.expect_rns_version:
+        checks[f"RNS version is exactly {args.expect_rns_version}"] = result["version"] == args.expect_rns_version
     for name, passed in checks.items():
         print(f"  {'✓' if passed else '✗'} {name}")
-
-    if failed:
-        print("\n✗ FAILURE: Reticulum compatibility checks failed: " + ", ".join(failed))
+    if not all(checks.values()):
+        print("FAILURE: Reticulum compatibility checks failed.")
         return 1
-
-    print("\n✓ SUCCESS: Identity bytes and LXMF address match Reticulum.")
+    print(f"SUCCESS: Identity bytes and LXMF address match the installed RNS {result['version']}.")
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

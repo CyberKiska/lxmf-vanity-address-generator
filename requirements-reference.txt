@@ -1,0 +1,5 @@
+# Test/verification dependencies only; the Go executable has no Python dependency.
+cryptography==50.0.1
+pyserial==3.5
+cffi==2.1.1
+pycparser==3.0

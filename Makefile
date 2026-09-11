@@ -2,17 +2,18 @@
 
 BINARY ?= lxmf-vanity
 PYTHON ?= python3
+RNS_FLAGS ?=
 BUILDFLAGS ?= -trimpath -buildvcs=false
 BUILDMODE ?= -buildmode=pie
 LDFLAGS ?= -s -w -buildid=
 
 # Build the binary
 build:
-	CGO_ENABLED=0 go build $(BUILDMODE) $(BUILDFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY) .
+	CGO_ENABLED=0 go build $(BUILDMODE) $(BUILDFLAGS) -ldflags "$(LDFLAGS)" -o "$(BINARY)" .
 
 # Build with debug symbols
 build-debug:
-	go build -o $(BINARY)-debug .
+	go build -o "$(BINARY)-debug" .
 
 # Build for multiple platforms
 build-all:
@@ -25,19 +26,22 @@ build-all:
 
 # Clean build artifacts
 clean:
-	rm -f lxmf-vanity lxmf-vanity-* identity identity.txt test_identity*
+	rm -f -- lxmf-vanity lxmf-vanity-debug lxmf-vanity.exe \
+		lxmf-vanity-linux-amd64 lxmf-vanity-linux-arm64 \
+		lxmf-vanity-darwin-amd64 lxmf-vanity-darwin-arm64 \
+		lxmf-vanity-windows-amd64.exe lxmf-vanity-windows-arm64.exe
 
 # Run unit tests
 test:
 	go test ./...
-	$(PYTHON) -m unittest verify_test.py
+	$(PYTHON) -m unittest discover -p '*_test.py'
 
 # Run the full local Go validation suite
 check:
 	go test ./...
 	go test -race ./...
 	go vet ./...
-	$(PYTHON) -m unittest verify_test.py
+	$(PYTHON) -m unittest discover -p '*_test.py'
 
 # Run the native matcher fuzz target for a bounded interval
 fuzz:
@@ -46,11 +50,11 @@ fuzz:
 # Run quick CLI smoke tests
 smoke: build
 	@echo "Testing with prefix 'ff'..."
-	./$(BINARY) --prefix ff --dry-run
+	"./$(BINARY)" --prefix ff --dry-run
 	@echo "\nTesting with postfix '99'..."
-	./$(BINARY) --postfix 99 --dry-run
+	"./$(BINARY)" --postfix 99 --dry-run
 	@echo "\nTesting with both prefix 'a' and postfix 'b'..."
-	./$(BINARY) --prefix a --postfix b --dry-run
+	"./$(BINARY)" --prefix a --postfix b --dry-run
 
 # Run targeted benchmarks
 bench:
@@ -58,22 +62,22 @@ bench:
 
 # End-to-end check using the installed RNS package
 compatibility: build
-	@tmpdir="$$(mktemp -d)"; \
+	@set -eu; tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
-	./$(BINARY) --prefix 0 --workers 2 --out "$$tmpdir/identity"; \
-	$(PYTHON) scripts/rns_compatibility_oracle.py --check testdata/rns-1.4.2-golden.json; \
-	$(PYTHON) verify.py "$$tmpdir/identity"
+	"./$(BINARY)" --prefix 0 --workers 2 --out "$$tmpdir/identity"; \
+	$(PYTHON) scripts/rns_compatibility_oracle.py --check testdata/rns-identity-vectors.json --binary "$(BINARY)" $(RNS_FLAGS); \
+	$(PYTHON) verify.py "$$tmpdir/identity" $(RNS_FLAGS)
 
-# Check or regenerate the deterministic fixture using exactly RNS 1.4.2
+# Check or regenerate deterministic bytes using the installed reference.
 oracle:
-	$(PYTHON) scripts/rns_compatibility_oracle.py --check testdata/rns-1.4.2-golden.json
+	$(PYTHON) scripts/rns_compatibility_oracle.py --check testdata/rns-identity-vectors.json $(RNS_FLAGS)
 
 regenerate-golden:
-	$(PYTHON) scripts/rns_compatibility_oracle.py --write testdata/rns-1.4.2-golden.json
+	$(PYTHON) scripts/rns_compatibility_oracle.py --write testdata/rns-identity-vectors.json $(RNS_FLAGS)
 
 # Install to system
 install: build
-	cp $(BINARY) /usr/local/bin/
+	cp "$(BINARY)" /usr/local/bin/
 
 # Download dependencies
 deps:
@@ -86,15 +90,15 @@ help:
 	@echo "  build      - Build the binary for current platform"
 	@echo "  build-debug - Build a binary with debug symbols"
 	@echo "  build-all  - Build binaries for all platforms"
-	@echo "  clean      - Remove build artifacts and test files"
+	@echo "  clean      - Remove known build artifacts; preserve identities"
 	@echo "  test       - Run unit tests"
 	@echo "  check      - Run tests, race detector, and vet"
 	@echo "  fuzz       - Run the native address-matcher fuzz target"
 	@echo "  smoke      - Run quick functionality tests"
 	@echo "  bench      - Run targeted benchmarks"
 	@echo "  compatibility - Generate and verify an identity with installed RNS"
-	@echo "  oracle     - Check the deterministic fixture with RNS 1.4.2"
-	@echo "  regenerate-golden - Regenerate the deterministic RNS 1.4.2 fixture"
+	@echo "  oracle     - Check the deterministic corpus with installed RNS"
+	@echo "  regenerate-golden - Regenerate deterministic RNS test vectors"
 	@echo "  install    - Install to /usr/local/bin"
 	@echo "  deps       - Download and tidy dependencies"
 	@echo "  help       - Show this help message"

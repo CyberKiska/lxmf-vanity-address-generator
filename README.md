@@ -1,136 +1,165 @@
 # LXMF Vanity Address Generator
 
-A cross-platform, parallel Go CLI for generating Reticulum identities whose
-`lxmf.delivery` destination hash has a chosen hexadecimal prefix and/or suffix.
-Python is not used in the search loop.
+A cross-platform, parallel Go CLI that generates Reticulum identities whose
+`lxmf.delivery` destination has a chosen hexadecimal prefix and/or suffix.
+The executable uses only the Go standard library. Python is used for optional
+verification and reference tests, never in the search loop.
+
+## Build and use
+
+Go 1.26.8 or newer is required; Go 1.27.1 is the recommended release toolchain.
+
+```bash
+make build
+identity_dir="$HOME/.lxmf-identities"
+mkdir -m 700 "$identity_dir"
+./lxmf-vanity --prefix cafe --out "$identity_dir/cafe"
+./lxmf-vanity --prefix abc --postfix def --workers 4 --out "$identity_dir/abc-def"
+```
+
+Use a directory you control, outside the source checkout, shared folders and
+automatically synchronized folders. Each output name must be new. Back up a successfully saved identity
+securely before using it with Reticulum.
+
+Patterns are case-insensitive hexadecimal, matched against the final
+32-character destination address. Both conditions must match when supplied.
+Their combined length cannot exceed 32. All arguments must be flags; unused
+positional arguments are rejected before any output files are created.
+
+| Option | Meaning |
+|---|---|
+| `--prefix <hex>` | Desired address prefix |
+| `--postfix <hex>` | Desired address suffix |
+| `--workers <int>` | Parallel workers, 1–256; defaults to `GOMAXPROCS` |
+| `--out <path>` | Private identity file; defaults to `identity` |
+| `--dry-run` | Search until a match, then discard its private identity |
+| `--benchmark <duration>` | Measure complete secure generation without saving; e.g. `30s` |
+| `--include-private-exports` | Include reversible Base64/Base32 private exports in the sidecar |
+| `--allow-inherited-windows-acl` | Explicitly accept an already secured Windows directory's inherited ACL |
+
+At least one pattern is required outside benchmark mode. Search time is random:
+`16^(prefix length + postfix length)` is the expected attempt count, not a
+deadline. Use short patterns initially. `--dry-run` cannot produce a usable
+identity because the private bytes are discarded; use `--benchmark` to measure
+performance.
 
 ## Compatibility
 
-The implementation matches this Reticulum construction:
+The implementation matches Reticulum's identity and LXMF delivery construction:
 
 ```text
 public_identity = X25519_public || Ed25519_public
 identity_hash   = SHA256(public_identity)[:16]
 name_hash       = SHA256(UTF8("lxmf.delivery"))[:10]
 destination     = SHA256(name_hash || identity_hash)[:16]
+private_file    = X25519_private[32] || Ed25519_seed[32]
 ```
 
-The saved private identity is the exact 64-byte layout consumed by
-`RNS.Identity.from_file()`:
+The 64-byte private file loads directly with `RNS.Identity.from_file()` and
+`rnid`. Newly generated X25519 private bytes use Reticulum's canonical scalar
+mask. Existing imported encodings are never rewritten by the verifier.
 
-```text
-X25519_private (32 bytes) || Ed25519_seed (32 bytes)
-```
+The 131-vector corpus and end-to-end tests cover RNS **1.5.2** and **1.4.2**,
+with both PyCA and internal providers. They check complete private/public bytes,
+hashes, signatures, shared secrets, encryption round-trips, incoming SINGLE
+LXMF destinations, and actual `rnid` file/Base64/Base32 imports. CI checks out
+exact reference commits; see [TECHNICAL.md](TECHNICAL.md).
 
-Compatibility is covered by a reproducible golden fixture produced with
-Reticulum 1.4.2 at commit `b48b96e61676504e0a4e527b33b9a0b4495c6872`.
-CI verifies that fixture, generates a fresh identity, and loads it through that
-exact reference revision before publishing cross-platform builds.
+Verification accepts other installed RNS versions when their tested behavior
+matches. An optional version assertion is available for reproducible testing;
+this is not a guarantee about untested future releases.
 
-## Build and use
+## Output protection and recovery
 
-```bash
-make build
+Two files are produced:
 
-./lxmf-vanity --prefix cafe --out my_identity
-./lxmf-vanity --postfix 1234 --out my_identity
-./lxmf-vanity --prefix abc --postfix def --out my_identity
-./lxmf-vanity --prefix deadbeef --workers 8 --out my_identity
-```
+1. `<out>`: the sensitive 64-byte private identity.
+2. `<out>.txt`: public address, identity hash, public keys and full specifier.
 
-Patterns are case-insensitive hexadecimal and are matched against the final
-32-character lowercase destination address. If both are supplied, both must
-match. Their combined length must not exceed 32 characters.
+The sidecar is public-only unless `--include-private-exports` is supplied.
+With that option, **both files contain private identity material**. Base64 and
+Base32 are reversible encodings, not encryption. Never commit private output;
+ignore rules cannot cover arbitrary `--out` names. A short vanity prefix does
+not authenticate a correspondent: compare the full destination address.
 
-### Options
+On Unix-like systems output files use mode `0600`. On Windows, mode bits do
+not enforce a private ACL. Private output is refused by default: restrict the
+output directory to your account using Windows security properties or `icacls`,
+then pass `--allow-inherited-windows-acl`. This option acknowledges the inherited
+ACL; it neither installs nor verifies one.
 
-- `--prefix <hex>`: desired address prefix.
-- `--postfix <hex>`: desired address suffix.
-- `--workers <int>`: parallel workers; defaults to `GOMAXPROCS` and is capped at 256.
-- `--out <path>`: private identity path; defaults to `identity`.
-- `--dry-run`: perform a real search and stop on a match without saving it.
-- `--benchmark <duration>`: measure full secure identity-generation throughput
-  without selecting or saving an identity, for example `--benchmark 30s`.
-- `--include-private-exports`: additionally put reversible Base64 and Base32 private identity exports in `<out>.txt`.
-- `--allow-inherited-windows-acl`: on Windows only, explicitly accept the
-  output directory's inherited ACL after securing that directory.
+The program opens the parent directory before searching and uses that same
+directory handle for writing and cleanup. Existing files, including dangling
+symlinks, are never overwritten. A moved or replaced parent is reported, and
+writes remain anchored to the original directory. The directory must still be
+trusted; this does not protect against someone allowed to modify its contents.
 
-At least one pattern is required outside benchmark mode. Existing `<out>` or
-`<out>.txt` files are never overwritten. The destination directory is
-write-tested before the potentially long search starts. Search mode prints the
-geometric expected-attempt count for the requested pattern; it is an average,
-not a completion deadline.
+Publication syncs a temporary file and prefers an atomic, no-replace hard link.
+Filesystems without hard links use exclusive creation; that fallback is not
+crash-atomic. Directory sync is best effort, so portable power-loss durability
+is not guaranteed. Keep backups.
 
-`--dry-run` irreversibly discards the private identity after printing its
-matching public address. Use `--benchmark`, not `--dry-run`, for performance
-measurement.
+A late primary-file collision retains the complete temporary identity and
+reports its recovery path. A metadata failure leaves the primary identity
+saved and returns an error describing the partial result. Preserve the reported
+file before retrying with a new name. The identity is saved before success is
+printed, and a completed match survives cancellation during worker shutdown.
 
-## Output and security
-
-Every candidate consumes 64 fresh bytes from Go's concurrency-safe
-`crypto/rand.Reader`, backed by the operating-system CSPRNG. No deterministic
-or non-cryptographic generator expands candidate material. X25519 inputs are
-canonically masked before persistence, while Ed25519 uses an independent
-32-byte seed. RNS requires X25519, so Go's `fips140=only` mode is not compatible;
-the program detects this and exits with a normal error instead of panicking.
-
-By default two files are created:
-
-1. `<out>` is the sensitive 64-byte Reticulum private identity.
-2. `<out>.txt` contains public address, identity hash, public keys, and the full destination specifier.
-
-The metadata file does **not** contain private keys by default. If
-`--include-private-exports` is used, `<out>.txt` becomes a second private-key
-file and must receive the same protection, backup policy, and retention policy
-as `<out>`.
-
-On Unix-like systems files are created with mode `0600`. On Windows, Go's Unix
-mode bits do not establish an owner-only ACL. The program therefore refuses to
-write private output on Windows by default. First create a directory restricted
-to your account (for example with Windows security properties or `icacls`),
-then explicitly pass `--allow-inherited-windows-acl`.
-
-Publication prefers a same-directory temporary file followed by atomic,
-no-replace hard-link creation. On filesystems without hard-link support it
-falls back to exclusive creation, which still refuses overwrite but cannot
-offer the same crash-atomic publication guarantee.
-
-If complete identity data was written but a publication race prevents the
-requested target from being created, the program retains the complete
-mode-`0600` temporary file and reports its exact recovery path instead of
-discarding a potentially expensive result.
+Each candidate consumes 64 fresh bytes from the OS-backed `crypto/rand.Reader`.
+Private buffers are cleared on a best-effort basis; Go cannot guarantee complete
+memory erasure. RNS requires X25519, which is unavailable in Go's FIPS-only mode;
+that mode returns a normal unsupported-provider error.
 
 ## Verification
 
-Install Reticulum and run:
+Use a Python environment with Reticulum installed:
 
 ```bash
-python3 -m pip install cryptography rns
-python3 verify.py my_identity
-rnid -i my_identity -H lxmf.delivery
+python3 -m venv .venv
+.venv/bin/python -m pip install rns -r requirements-reference.txt
+.venv/bin/python verify.py "$identity_dir/cafe"
+.venv/bin/rnid -i "$identity_dir/cafe" -H lxmf.delivery
 ```
 
-`verify.py` checks private-file round-trip, public keys, identity hash,
-`RNS.Destination.hash()`, `hash_from_name_and_identity()`, signing,
-encryption/decryption, and metadata. It requires exactly RNS 1.4.2 and returns
-a non-zero status if it is unavailable or a different version is installed.
-`--manual-only` must be used explicitly for structural checks that do not
-establish reference compatibility.
-
-## Development checks
+On Windows the environment's executables are in `.venv\Scripts`.
+`verify.py` requires exactly 64 private bytes, bounds metadata reads, checks
+recognized metadata fields, and rejects conflicting/duplicate fields. It
+reports the actual RNS version, provider and import path. Missing RNS or a
+behavioral mismatch causes a nonzero exit.
 
 ```bash
-make test          # unit and golden-vector tests
-make check         # tests, race detector, and go vet
-make fuzz          # native matcher fuzz target
-make compatibility # end-to-end check with the installed RNS package
-make oracle        # verify the checked-in fixture with exactly RNS 1.4.2
+# Optional CI assertion and provider selection:
+.venv/bin/python verify.py "$identity_dir/cafe" --expect-rns-version 1.5.2 --provider pyca
+# Explicit independent calculation without an RNS compatibility claim:
+.venv/bin/python verify.py "$identity_dir/cafe" --manual-only
+```
+
+## Development and distribution
+
+```bash
+make test          # Go and Python tests
+make check         # tests, race detector, vet
+make fuzz          # bounded matcher fuzzing
+make compatibility PYTHON=.venv/bin/python
+make oracle PYTHON=.venv/bin/python RNS_FLAGS='--expect-rns-version 1.5.2 --provider internal'
 make bench
-make build-all
+make build-all     # Linux/macOS/Windows, amd64/arm64
+make clean         # removes known build binaries; preserves identities
 ```
 
-See [TECHNICAL.md](TECHNICAL.md) for protocol and implementation details and
-[PERFORMANCE.md](PERFORMANCE.md) for probabilistic search-time guidance.
+The release workflow gates six cgo-free PIE artifacts on platform tests,
+reference tests, race/fuzz/FIPS checks and `govulncheck`. Artifacts include SHA-256
+checksums and build information. Successful trusted `main` builds also receive
+GitHub build-provenance attestations. Verify a downloaded binary with:
+
+```bash
+gh attestation verify ./lxmf-vanity-linux-amd64 --repo CyberKiska/lxmf-vanity-address-generator
+```
+
+Checksums detect corruption; provenance verification binds the binary to its
+build. Pull-request artifacts are test builds and are not attested. See
+[VALIDATION.md](VALIDATION.md) for checks actually run on this revision and
+[PERFORMANCE.md](PERFORMANCE.md) for measurement guidance.
 
 ## License
 
