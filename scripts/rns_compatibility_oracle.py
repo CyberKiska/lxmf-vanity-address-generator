@@ -6,6 +6,7 @@ cryptographic bytes. All private inputs in this fixture are PUBLIC TEST DATA.
 """
 
 import argparse
+import base64
 import contextlib
 import hashlib
 import io
@@ -75,6 +76,21 @@ def build_fixture(RNS):
     return {"message": MESSAGE.decode("ascii"), "peer_private": PEER_PRIVATE.hex(), "vectors": vectors}
 
 
+def check_rnid_import(bootstrap, value, expected_address, encoding=None):
+    label = {None: "file", "-b": "Base64", "-B": "Base32"}[encoding]
+    # URL-safe Base64 can begin with '-'. Bind the value to -M so argparse
+    # cannot interpret private identity bytes as another command-line option.
+    arguments = ["-i", str(value)] if encoding is None else ["-M=" + value, encoding]
+    result = subprocess.run(
+        [sys.executable, "-c", bootstrap, *arguments, "-N", "-H", "lxmf.delivery"],
+        capture_output=True, text=True, timeout=30,
+    )
+    # Neither the command nor captured output is safe to log: either can
+    # contain a private export, including in argparse error messages.
+    require(result.returncode == 0, f"rnid {label} import exited with status {result.returncode}")
+    require(expected_address in result.stdout, f"rnid {label} import did not report the expected destination")
+
+
 def check_cli(RNS, binary, provider):
     binary = str(binary.resolve())
     repository = str(Path(__file__).resolve().parent.parent)
@@ -97,13 +113,21 @@ def check_cli(RNS, binary, provider):
             with contextlib.redirect_stdout(io.StringIO()):
                 args = argparse.Namespace(identity_file=str(path), provider=provider, expect_rns_version=None, manual_only=False)
                 require(verify.verify_identity(args) == 0, "CLI metadata/reference verification failed")
-            imports = [["-i", str(path)]]
+            check_rnid_import(bootstrap, path, address.hex())
             if exports:
                 fields, _ = verify.parse_metadata(path.with_suffix(".txt").read_text(encoding="utf-8"))
-                imports += [["-M", fields[verify.BASE64_LABEL], "-b"], ["-M", fields[verify.BASE32_LABEL], "-B"]]
-            for arguments in imports:
-                result = subprocess.run([sys.executable, "-c", bootstrap, *arguments, "-N", "-H", "lxmf.delivery"], capture_output=True, text=True, timeout=30)
-                require(result.returncode == 0 and address.hex() in result.stdout, "rnid file/export import mismatch")
+                check_rnid_import(bootstrap, fields[verify.BASE64_LABEL], address.hex(), "-b")
+                check_rnid_import(bootstrap, fields[verify.BASE32_LABEL], address.hex(), "-B")
+
+    # PUBLIC TEST KEY: the corpus's masked all-FF input guarantees a leading
+    # hyphen, so this regression is tested on every run instead of by chance.
+    private = bytes([248]) + bytes([255]) * 30 + bytes([127]) + bytes([255]) * 32
+    exported = base64.urlsafe_b64encode(private).decode("ascii")
+    require(exported.startswith("-"), "invalid leading-hyphen regression input")
+    identity = RNS.Identity.from_bytes(private)
+    address = RNS.Destination.hash(identity, "lxmf", "delivery").hex()
+    check_rnid_import(bootstrap, exported, address, "-b")
+    print("rnid leading-hyphen Base64 import passed")
     print("CLI private-file, metadata, vanity pattern and rnid export round-trips passed")
 
 
