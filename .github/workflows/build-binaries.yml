@@ -18,24 +18,25 @@ env:
   GOTOOLCHAIN: local
   RELEASE_GO: '1.27.1'
   GOVULNCHECK_VERSION: v1.8.0
+  RNS_VERSION: '1.5.2'
+  RNS_REFERENCE_COMMIT: ea98db4f53dcf0defc0e71a16e60d28b1229c4e6
 
 jobs:
   platform-tests:
-    name: Tests (${{ matrix.os }}, Go ${{ matrix.go }})
+    name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go: ['1.26.8', '1.27.1']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ matrix.go }}
+          go-version: ${{ env.RELEASE_GO }}
           cache: false # No external Go modules.
       - name: Go unit and CLI tests
         run: go test -count=1 ./...
@@ -74,22 +75,11 @@ jobs:
           grep -q "X25519 public-key derivation unavailable" fips-only.log
 
   compatibility:
-    name: RNS ${{ matrix.reference.version }} (${{ matrix.provider }})
+    name: RNS compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        reference:
-          - version: '1.4.2'
-            commit: b48b96e61676504e0a4e527b33b9a0b4495c6872
-          - version: '1.5.2'
-            commit: ea98db4f53dcf0defc0e71a16e60d28b1229c4e6
-        provider: [pyca, internal]
     env:
       PYTHONPATH: ${{ github.workspace }}/.reference-rns
-      RNS_VERSION: ${{ matrix.reference.version }}
-      RNS_PROVIDER: ${{ matrix.provider }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -98,7 +88,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: markqvist/Reticulum
-          ref: ${{ matrix.reference.commit }}
+          ref: ${{ env.RNS_REFERENCE_COMMIT }}
           path: .reference-rns
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -115,12 +105,14 @@ jobs:
       - name: Check vectors, Go output and actual rnid imports
         run: |
           CGO_ENABLED=0 go build -buildmode=pie -trimpath -buildvcs=false -o "${BINARY_BASENAME}" .
-          .venv/bin/python scripts/rns_compatibility_oracle.py \
-            --check testdata/rns-identity-vectors.json --binary "${BINARY_BASENAME}" \
-            --expect-rns-version "$RNS_VERSION" --provider "$RNS_PROVIDER"
+          for provider in pyca internal; do
+            .venv/bin/python scripts/rns_compatibility_oracle.py \
+              --check testdata/rns-identity-vectors.json --binary "${BINARY_BASENAME}" \
+              --expect-rns-version "$RNS_VERSION" --provider "$provider"
+          done
 
   build:
-    name: ${{ matrix.goos }}-${{ matrix.goarch }}
+    name: Binary (${{ matrix.goos }}-${{ matrix.goarch }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [platform-tests, security-tests, compatibility]
@@ -172,7 +164,9 @@ jobs:
         with:
           subject-path: ${{ steps.build.outputs.binary }}
           create-storage-record: false
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Upload downloadable binary bundle
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.BINARY_BASENAME }}-${{ matrix.goos }}-${{ matrix.goarch }}
           if-no-files-found: error
@@ -181,3 +175,15 @@ jobs:
             ${{ steps.build.outputs.binary }}.sha256
             ${{ steps.build.outputs.binary }}.build-info.txt
           retention-days: 60
+      - name: Show binary download in run summary
+        env:
+          BINARY_NAME: ${{ steps.build.outputs.binary }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          {
+            echo "### Download $BINARY_NAME"
+            echo
+            printf '[Download binary bundle](%s)\n' "$ARTIFACT_URL"
+            echo
+            echo 'Includes the executable, SHA-256 checksum and build information.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -59,15 +59,17 @@ The 64-byte private file loads directly with `RNS.Identity.from_file()` and
 `rnid`. Newly generated X25519 private bytes use Reticulum's canonical scalar
 mask. Existing imported encodings are never rewritten by the verifier.
 
-The 131-vector corpus and end-to-end tests cover RNS **1.5.2** and **1.4.2**,
-with both PyCA and internal providers. They check complete private/public bytes,
+The mandatory CI reference is RNS **1.5.2**, checked against the 131-vector
+corpus and end-to-end tests with both PyCA and internal providers. They check
+complete private/public bytes,
 hashes, signatures, shared secrets, encryption round-trips, incoming SINGLE
 LXMF destinations, and actual `rnid` file/Base64/Base32 imports. CI checks out
-exact reference commits; see [TECHNICAL.md](TECHNICAL.md).
+the exact reference commit; see [TECHNICAL.md](TECHNICAL.md).
 
 Verification accepts other installed RNS versions when their tested behavior
 matches. An optional version assertion is available for reproducible testing;
-this is not a guarantee about untested future releases.
+this is not a guarantee about untested future releases. Older RNS releases
+are not part of the mandatory CI matrix.
 
 ## Output protection and recovery
 
@@ -146,6 +148,14 @@ make bench
 make build-all     # Linux/macOS/Windows, amd64/arm64
 make clean         # removes known build binaries; preserves identities
 ```
+
+In **Actions → Build binaries → a successful run → Summary**, use the
+**Download** links for Linux, macOS or Windows (amd64/arm64). The same six
+bundles appear in the run's **Artifacts** section.
+
+CI uses the single release Go toolchain for tests and builds; it does not
+multiply jobs by historical Go or RNS versions. The two RNS providers run
+sequentially in one compatibility job.
 
 The release workflow gates six cgo-free PIE artifacts on platform tests,
 reference tests, race/fuzz/FIPS checks and `govulncheck`. Artifacts include SHA-256

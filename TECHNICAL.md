@@ -7,12 +7,11 @@ persist an identity and derive its LXMF delivery destination. It is not a
 general Reticulum implementation.
 
 CI runs the same deterministic corpus and end-to-end checks against both
-Reticulum providers at these exact source revisions:
+Reticulum providers at this exact source revision:
 
 | RNS version | Reference commit |
 |---|---|
 | 1.5.2 | `ea98db4f53dcf0defc0e71a16e60d28b1229c4e6` |
-| 1.4.2 | `b48b96e61676504e0a4e527b33b9a0b4495c6872` |
 
 Expected cryptographic bytes are independent of version/provenance metadata.
 The verifier checks installed behavior and only enforces a version when
@@ -222,12 +221,14 @@ encryption is public-key-to-private-key. `--binary` additionally generates
 fresh Go files in both metadata modes, tests `RNS.Identity.from_file()`, verifies
 metadata, and runs actual `rnid` file/Base64/Base32 imports in subprocesses.
 
-CI checks out both pinned references and installs the exact Python dependencies
-in `requirements-reference.txt`. Provider choice occurs at RNS import time:
+CI checks out the pinned RNS 1.5.2 reference and installs the exact Python
+dependencies in `requirements-reference.txt`. Provider choice occurs at RNS import time:
 `--provider internal` temporarily hides PyCA from RNS's discovery mechanism;
 the reference algorithms are unmodified and the resulting backend is asserted.
-Each provider is tested in a fresh process. Unit/CLI tests run on Linux, macOS
-and Windows with Go 1.26.8 and 1.27.1; race, fuzz and FIPS checks run on Linux.
+Each provider is tested in a fresh process, sequentially within one CI job.
+Unit/CLI tests run on Linux, macOS and Windows with the release Go 1.27.1
+toolchain; race, fuzz and FIPS checks run on Linux. Historical fixture provenance
+does not impose a legacy RNS runtime or a legacy CI support requirement.
 
 `verify.py` fails closed when RNS is unavailable. `--manual-only` performs
 structural calculations but deliberately does not claim reference compatibility.

@@ -62,11 +62,19 @@ secure path. The audit found entropy reads too cheap on this Mac to justify
 buffering changes; the standard curve APIs remain the measured bottleneck.
 See [PERFORMANCE.md](PERFORMANCE.md) for interpretation and repeatable commands.
 
+## CI policy update — 11 September 2026
+
+The mandatory matrix now uses one Go release toolchain and RNS 1.5.2 only.
+PyCA and internal provider checks run sequentially in one compatibility job.
+The earlier 1.4.2 and minimum-Go results above remain historical measurements,
+not ongoing support commitments. Six binary jobs now expose download links in
+the run summary.
+
 ## Release boundary
 
 Native Linux and Windows execution was not available on this host. Their unit
-and CLI tests are configured in CI alongside native macOS tests, with both Go
-toolchains. Cross-compilation does not substitute for those runtime checks.
+and CLI tests are configured in CI alongside native macOS tests, using the
+release Go toolchain. Cross-compilation does not substitute for those runtime checks.
 The updated workflow has been statically validated, but this local work has
 not pushed a branch, run GitHub CI, or generated a GitHub attestation. A successful
 CI run is required before distributing its release artifacts.
