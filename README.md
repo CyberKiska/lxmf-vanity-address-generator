@@ -64,7 +64,7 @@ corpus and end-to-end tests with both PyCA and internal providers. They check
 complete private/public bytes,
 hashes, signatures, shared secrets, encryption round-trips, incoming SINGLE
 LXMF destinations, and actual `rnid` file/Base64/Base32 imports. CI checks out
-the exact reference commit; see [TECHNICAL.md](TECHNICAL.md).
+the exact reference commit.
 
 Verification accepts other installed RNS versions when their tested behavior
 matches. An optional version assertion is available for reproducible testing;
@@ -167,10 +167,12 @@ gh attestation verify ./lxmf-vanity-linux-amd64 --repo CyberKiska/lxmf-vanity-ad
 ```
 
 Checksums detect corruption; provenance verification binds the binary to its
-build. Pull-request artifacts are test builds and are not attested. See
-[VALIDATION.md](VALIDATION.md) for checks actually run on this revision and
-[PERFORMANCE.md](PERFORMANCE.md) for measurement guidance.
+build. Pull-request artifacts are test builds and are not attested. Use the
+workflow logs for validation results and `make bench` or `--benchmark` to measure
+performance on your own hardware.
 
 ## License
 
 GNU General Public License v3.0.
+
+See [CHANGELOG.md](CHANGELOG.md) for changes and security fixes.

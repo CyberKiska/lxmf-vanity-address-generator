@@ -34,3 +34,9 @@ path/
 __pycache__/
 .venv/
 .reference-rns/
+
+# Local planning and review records
+IMPLEMENTATION_PLAN.md
+TECHNICAL.md
+PERFORMANCE.md
+VALIDATION.md
