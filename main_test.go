@@ -278,7 +278,8 @@ func TestSearcherReturnsExactlyOneCompatibleResult(t *testing.T) {
 	rng := &repeatingReader{pattern: goldenRandomInput(t)}
 	search := newSearcher(matcher, rng)
 
-	identity, err := search.run(context.Background(), 16)
+	var identity Identity
+	err = search.run(context.Background(), 16, &identity)
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestEachCandidateConsumesExactly64FreshReaderBytes(t *testing.T) {
 	}
 	rng := &countingReader{reader: &repeatingReader{pattern: goldenRandomInput(t)}}
 	search := newSearcher(matcher, rng)
-	if _, err := search.run(context.Background(), 1); err != nil {
+	if err := search.run(context.Background(), 1, new(Identity)); err != nil {
 		t.Fatal(err)
 	}
 	if got := rng.BytesRead(); got != identityPrivateKeySize {
@@ -326,7 +327,7 @@ func TestSearcherPropagatesRandomSourceFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	search := newSearcher(matcher, errorReader{})
-	_, err = search.run(context.Background(), 4)
+	err = search.run(context.Background(), 4, new(Identity))
 	if err == nil || !strings.Contains(err.Error(), "secure random source failed") {
 		t.Fatalf("expected random-source failure, got %v", err)
 	}
@@ -340,7 +341,7 @@ func TestSearcherHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	search := newSearcher(matcher, &repeatingReader{pattern: goldenRandomInput(t)})
-	_, err = search.run(ctx, 8)
+	err = search.run(ctx, 8, new(Identity))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", err)
 	}
@@ -351,7 +352,7 @@ func TestSearcherBenchmarkModeRunsUntilDeadline(t *testing.T) {
 	search.stopOnMatch = false
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	_, err := search.run(ctx, 1)
+	err := search.run(ctx, 1, new(Identity))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected benchmark deadline, got %v", err)
 	}
@@ -382,7 +383,8 @@ func TestSearcherCancellationDuringCandidate(t *testing.T) {
 				cancel()
 				return copy(p, raw), nil
 			}))
-			identity, err := search.run(ctx, 1)
+			var identity Identity
+			err = search.run(ctx, 1, &identity)
 			if matches {
 				if err != nil {
 					t.Fatalf("discarded completed winner: %v", err)

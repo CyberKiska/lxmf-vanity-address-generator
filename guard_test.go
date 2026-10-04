@@ -175,3 +175,39 @@ func TestSourceGuardDetectsViolations(t *testing.T) {
 		}
 	}
 }
+
+func byValueSecret(f *ast.File) bool {
+	bad := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		fn, ok := n.(*ast.FuncType)
+		if !ok {
+			return true
+		}
+		for _, fields := range []*ast.FieldList{fn.Params, fn.Results} {
+			if fields == nil {
+				continue
+			}
+			for _, field := range fields.List {
+				if id, ok := field.Type.(*ast.Ident); ok && (id.Name == "Identity" || id.Name == "searchOutcome") {
+					bad = true
+				}
+			}
+		}
+		return true
+	})
+	return bad
+}
+func TestSecretsNotPassedByValue(t *testing.T) {
+	for _, f := range productionSyntax(t) {
+		if byValueSecret(f) {
+			t.Fatal("secret aggregate passed by value")
+		}
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "probe.go", `package main;func f(k Identity) searchOutcome {panic("probe")}`, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !byValueSecret(f) {
+		t.Fatal("guard missed secret argument/result")
+	}
+}

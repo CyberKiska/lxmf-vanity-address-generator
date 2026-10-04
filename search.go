@@ -24,12 +24,15 @@ func newSearcher(matcher addressMatcher, rng io.Reader) *searcher {
 	return &searcher{matcher: matcher, rng: rng, stopOnMatch: true}
 }
 
-func (s *searcher) run(parent context.Context, workerCount int) (Identity, error) {
+func (s *searcher) run(parent context.Context, workerCount int, result *Identity) error {
+	if result == nil {
+		return fmt.Errorf("nil winner buffer")
+	}
 	if workerCount < 1 || workerCount > maxWorkerCount {
-		return Identity{}, fmt.Errorf("invalid worker count %d", workerCount)
+		return fmt.Errorf("invalid worker count %d", workerCount)
 	}
 	if s.rng == nil {
-		return Identity{}, fmt.Errorf("secure random source is nil")
+		return fmt.Errorf("secure random source is nil")
 	}
 	s.attempts.Store(0)
 
@@ -38,10 +41,15 @@ func (s *searcher) run(parent context.Context, workerCount int) (Identity, error
 
 	outcomes := make(chan searchOutcome, 1)
 	var publishOnce sync.Once
-	publish := func(outcome searchOutcome) {
-		defer wipeIdentitySecrets(&outcome.identity)
+	publish := func(identity *Identity, err error) {
 		publishOnce.Do(func() {
-			outcomes <- outcome
+			var transfer searchOutcome
+			transfer.err = err
+			if identity != nil {
+				transfer.identity = *identity
+			}
+			outcomes <- transfer
+			wipeIdentitySecrets(&transfer.identity)
 			cancel()
 		})
 	}
@@ -64,19 +72,20 @@ func (s *searcher) run(parent context.Context, workerCount int) (Identity, error
 		select {
 		case outcome = <-outcomes:
 		default:
-			return Identity{}, parent.Err()
+			return parent.Err()
 		}
 	}
 
 	cancel()
 	workersDone.Wait()
 	if outcome.err != nil {
-		return Identity{}, outcome.err
+		return outcome.err
 	}
-	return outcome.identity, nil
+	*result = outcome.identity
+	return nil
 }
 
-func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publish func(searchOutcome)) {
+func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publish func(*Identity, error)) {
 	defer workersDone.Done()
 
 	var localAttempts uint64
@@ -97,12 +106,12 @@ func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publ
 		}
 
 		if _, err := io.ReadFull(s.rng, randBuf[:]); err != nil {
-			publish(searchOutcome{err: fmt.Errorf("secure random source failed: %w", err)})
+			publish(nil, fmt.Errorf("secure random source failed: %w", err))
 			return
 		}
 
 		if err := deriveCandidate(&identity, &randBuf, &publicKey, &addrHashMaterial); err != nil {
-			publish(searchOutcome{err: err})
+			publish(nil, err)
 			return
 		}
 
@@ -112,7 +121,7 @@ func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publ
 		}
 
 		if s.stopOnMatch && s.matcher.matches(identity.Address[:]) {
-			publish(searchOutcome{identity: identity})
+			publish(&identity, nil)
 			return
 		}
 	}

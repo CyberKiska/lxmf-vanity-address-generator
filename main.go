@@ -103,7 +103,8 @@ func execute(ctx context.Context, cfg config, stdout, stderr io.Writer) error {
 	if cfg.benchmarkDuration > 0 {
 		runContext, stopBenchmark = context.WithTimeout(searchContext, cfg.benchmarkDuration)
 	}
-	identity, err := search.run(runContext, cfg.workers)
+	var identity Identity
+	err := search.run(runContext, cfg.workers, &identity)
 	elapsed := time.Since(startTime)
 	stopBenchmark()
 	stopProgress()
