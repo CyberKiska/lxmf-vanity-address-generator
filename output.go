@@ -26,7 +26,7 @@ func (o *outputTarget) saveIdentity(identity *Identity, privateExports bool) err
 	copy(privateKey[0:32], identity.X25519Private[:])
 	copy(privateKey[32:64], identity.Ed25519Seed[:])
 
-	if err := o.writeFile(o.name, privateKey[:], 0o600, o.root.Link, true); err != nil {
+	if err := o.writeFile(o.name, privateKey[:], 0o600, true); err != nil {
 		return fmt.Errorf("save identity: %w", errors.Join(err, o.checkLocation()))
 	}
 	if err := o.writeIdentityInfo(identity, privateExports); err != nil {
@@ -36,7 +36,7 @@ func (o *outputTarget) saveIdentity(identity *Identity, privateExports bool) err
 }
 
 type outputTarget struct {
-	root *os.Root
+	root dirOps
 	path string
 	name string
 }
@@ -57,7 +57,7 @@ func openOutputTarget(path string) (*outputTarget, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open output directory: %w", err)
 	}
-	return &outputTarget{root: root, path: absolute, name: name}, nil
+	return &outputTarget{root: rootDir{root}, path: absolute, name: name}, nil
 }
 
 func (o *outputTarget) preflight() error {
@@ -80,7 +80,7 @@ func (o *outputTarget) preflight() error {
 	return o.checkLocation()
 }
 
-func (o *outputTarget) createTemp(base string) (*os.File, string, error) {
+func (o *outputTarget) createTemp(base string) (fileOps, string, error) {
 	for range 10 {
 		name := base + ".tmp-" + rand.Text()
 		file, err := o.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -126,7 +126,7 @@ func (e *recoverableWriteError) Unwrap() error {
 
 // writeFile prefers atomic no-replace hard-link publication. The exclusive
 // fallback preserves no-overwrite semantics but is not crash-atomic.
-func (o *outputTarget) writeFile(path string, data []byte, mode os.FileMode, link func(string, string) error, preserveCompleteTemp bool) error {
+func (o *outputTarget) writeFile(path string, data []byte, mode os.FileMode, preserveCompleteTemp bool) error {
 	file, tempPath, err := o.createTemp(path)
 	if err != nil {
 		return err
@@ -154,7 +154,7 @@ func (o *outputTarget) writeFile(path string, data []byte, mode os.FileMode, lin
 		return err
 	}
 
-	linkErr := link(tempPath, path)
+	linkErr := o.root.Link(tempPath, path)
 	if linkErr == nil {
 		if err := o.root.Remove(tempPath); err != nil {
 			removeTemp = false
@@ -226,7 +226,7 @@ func (o *outputTarget) writeFileExclusive(path string, data []byte, mode os.File
 }
 
 func (o *outputTarget) syncDirBestEffort() {
-	file, err := o.root.Open(".")
+	file, err := o.root.OpenFile(".", os.O_RDONLY, 0)
 	if err != nil {
 		return
 	}

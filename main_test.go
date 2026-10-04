@@ -549,10 +549,10 @@ func TestWriteFileSafelyRefusesExistingTarget(t *testing.T) {
 	path := filepath.Join(dir, "target")
 	output := testOutput(t, path)
 
-	if err := output.writeFile(output.name, []byte("first"), 0o600, output.root.Link, false); err != nil {
+	if err := output.writeFile(output.name, []byte("first"), 0o600, false); err != nil {
 		t.Fatalf("initial write failed: %v", err)
 	}
-	if err := output.writeFile(output.name, []byte("second"), 0o600, output.root.Link, false); err == nil {
+	if err := output.writeFile(output.name, []byte("second"), 0o600, false); err == nil {
 		t.Fatal("expected overwrite refusal")
 	}
 	data, err := os.ReadFile(path)
@@ -572,7 +572,8 @@ func TestWriteFileSafelyFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
 		return errors.New("hard links unavailable")
 	}
 
-	if err := output.writeFile(output.name, []byte("identity"), 0o600, linkUnavailable, false); err != nil {
+	output.root = &faultDir{dirOps: output.root, link: linkUnavailable}
+	if err := output.writeFile(output.name, []byte("identity"), 0o600, false); err != nil {
 		t.Fatalf("exclusive fallback failed: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -582,7 +583,7 @@ func TestWriteFileSafelyFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
 	if string(data) != "identity" {
 		t.Fatalf("fallback content = %q", data)
 	}
-	if err := output.writeFile(output.name, []byte("replacement"), 0o600, linkUnavailable, false); err == nil {
+	if err := output.writeFile(output.name, []byte("replacement"), 0o600, false); err == nil {
 		t.Fatal("fallback overwrote an existing target")
 	}
 }
@@ -599,7 +600,8 @@ func TestRecoverableIdentityWriteRetainsCompleteTempOnPublicationRace(t *testing
 		return errors.New("injected publication race")
 	}
 
-	err := output.writeFile(output.name, secret, 0o600, publicationRace, true)
+	output.root = &faultDir{dirOps: output.root, link: publicationRace}
+	err := output.writeFile(output.name, secret, 0o600, true)
 	var recoveryErr *recoverableWriteError
 	if !errors.As(err, &recoveryErr) {
 		t.Fatalf("expected recoverable write error, got %v", err)
@@ -836,7 +838,8 @@ func TestOutputDirectoryReplacementCannotRedirectIdentity(t *testing.T) {
 			if fallback {
 				link = func(string, string) error { return errors.New("no hard links") }
 			}
-			if err := output.writeFile(output.name, []byte("private data"), 0600, link, true); err != nil {
+			output.root = &faultDir{dirOps: output.root, link: link}
+			if err := output.writeFile(output.name, []byte("private data"), 0600, true); err != nil {
 				t.Fatal(err)
 			}
 			got, err := os.ReadFile(filepath.Join(moved, "identity"))

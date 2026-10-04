@@ -68,7 +68,7 @@ func (o *outputTarget) writeIdentityInfo(identity *Identity, privateExports bool
 	if privateExports {
 		defer wipeBytes(info.Bytes())
 	}
-	return o.writeFile(o.name+".txt", info.Bytes(), 0o600, o.root.Link, false)
+	return o.writeFile(o.name+".txt", info.Bytes(), 0o600, false)
 }
 
 // outputTarget holds the directory open from preflight through publication. All
