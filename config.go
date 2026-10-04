@@ -3,11 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"runtime"
+	"strings"
 	"time"
 )
 
-var (
+type config struct {
 	prefix                string
 	postfix               string
 	workers               int
@@ -16,17 +18,29 @@ var (
 	includePrivateExports bool
 	benchmarkDuration     time.Duration
 	allowInheritedWinACL  bool
-)
+}
 
-func init() {
-	flag.StringVar(&prefix, "prefix", "", "Desired hex prefix (1-32 chars)")
-	flag.StringVar(&postfix, "postfix", "", "Desired hex postfix/suffix (1-32 chars)")
-	flag.IntVar(&workers, "workers", defaultWorkerCount(), "Number of parallel workers")
-	flag.StringVar(&outPath, "out", "identity", "Output path for identity file")
-	flag.BoolVar(&dryRun, "dry-run", false, "Find a match but do not save it")
-	flag.BoolVar(&includePrivateExports, "include-private-exports", false, "Include reversible private-key exports in <out>.txt (sensitive)")
-	flag.DurationVar(&benchmarkDuration, "benchmark", 0, "Benchmark full identity generation for a duration (for example 30s); no identity is selected or saved")
-	flag.BoolVar(&allowInheritedWinACL, "allow-inherited-windows-acl", false, "On Windows, explicitly accept the output directory's inherited ACL for private files")
+func parseArgs(args []string, usage io.Writer) (config, error) {
+	var cfg config
+	flags := flag.NewFlagSet("lxmf-vanity", flag.ContinueOnError)
+	flags.SetOutput(usage)
+	flags.StringVar(&cfg.prefix, "prefix", "", "Desired hex prefix (1-32 chars)")
+	flags.StringVar(&cfg.postfix, "postfix", "", "Desired hex postfix/suffix (1-32 chars)")
+	flags.IntVar(&cfg.workers, "workers", defaultWorkerCount(), "Number of parallel workers")
+	flags.StringVar(&cfg.outPath, "out", "identity", "Output path for identity file")
+	flags.BoolVar(&cfg.dryRun, "dry-run", false, "Find a match but do not save it")
+	flags.BoolVar(&cfg.includePrivateExports, "include-private-exports", false, "Include reversible private-key exports in <out>.txt (sensitive)")
+	flags.DurationVar(&cfg.benchmarkDuration, "benchmark", 0, "Benchmark full identity generation for a duration (for example 30s); no identity is selected or saved")
+	flags.BoolVar(&cfg.allowInheritedWinACL, "allow-inherited-windows-acl", false, "On Windows, explicitly accept the output directory's inherited ACL for private files")
+	if err := flags.Parse(args); err != nil {
+		return cfg, err
+	}
+	if flags.NArg() != 0 {
+		return cfg, fmt.Errorf("unexpected positional arguments %q; all options must use flags", flags.Args())
+	}
+	cfg.prefix = strings.ToLower(cfg.prefix)
+	cfg.postfix = strings.ToLower(cfg.postfix)
+	return cfg, validateInputs(cfg)
 }
 
 func defaultWorkerCount() int {
@@ -40,32 +54,32 @@ func defaultWorkerCount() int {
 	return workers
 }
 
-func validateInputs() error {
-	if benchmarkDuration < 0 {
+func validateInputs(cfg config) error {
+	if cfg.benchmarkDuration < 0 {
 		return fmt.Errorf("benchmark duration must not be negative")
 	}
-	if benchmarkDuration > 0 {
-		if prefix != "" || postfix != "" {
+	if cfg.benchmarkDuration > 0 {
+		if cfg.prefix != "" || cfg.postfix != "" {
 			return fmt.Errorf("--benchmark cannot be combined with --prefix or --postfix")
 		}
-		if dryRun {
+		if cfg.dryRun {
 			return fmt.Errorf("--benchmark cannot be combined with --dry-run")
 		}
-		if includePrivateExports {
+		if cfg.includePrivateExports {
 			return fmt.Errorf("--benchmark cannot be combined with --include-private-exports")
 		}
 	} else {
-		if err := validatePatterns(prefix, postfix); err != nil {
+		if err := validatePatterns(cfg.prefix, cfg.postfix); err != nil {
 			return err
 		}
 	}
-	if workers < 1 {
+	if cfg.workers < 1 {
 		return fmt.Errorf("workers must be at least 1")
 	}
-	if workers > maxWorkerCount {
+	if cfg.workers > maxWorkerCount {
 		return fmt.Errorf("workers must not exceed %d", maxWorkerCount)
 	}
-	if dryRun && includePrivateExports {
+	if cfg.dryRun && cfg.includePrivateExports {
 		return fmt.Errorf("--include-private-exports cannot be used with --dry-run")
 	}
 	return nil

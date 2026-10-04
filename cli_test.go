@@ -80,3 +80,15 @@ func TestCLIBenchmarkReportsElapsedTimeWithoutFiles(t *testing.T) {
 		t.Fatalf("benchmark created files: %v (%v)", entries, err)
 	}
 }
+
+func TestCLIHelpDoesNotCreateFiles(t *testing.T) {
+	dir := t.TempDir()
+	output, err := runCLI(t, dir, "--help")
+	if err != nil || !strings.Contains(string(output), "include-private-exports") {
+		t.Fatalf("help: %v: %s", err, output)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("help created files: %v", err)
+	}
+}

@@ -153,60 +153,32 @@ func assertFixtureValue(t *testing.T, name, got, want string) {
 }
 
 func TestValidateInputsRejectsInvalidWorkerCounts(t *testing.T) {
-	originalPrefix, originalPostfix, originalWorkers := prefix, postfix, workers
-	originalDryRun, originalPrivateExports := dryRun, includePrivateExports
-	originalBenchmark := benchmarkDuration
-	t.Cleanup(func() {
-		prefix, postfix, workers = originalPrefix, originalPostfix, originalWorkers
-		dryRun, includePrivateExports = originalDryRun, originalPrivateExports
-		benchmarkDuration = originalBenchmark
-	})
-	prefix, postfix = "a", ""
-	dryRun, includePrivateExports = false, false
-	benchmarkDuration = 0
-
-	workers = 0
-	if err := validateInputs(); err == nil {
-		t.Fatal("expected zero workers to be rejected")
+	cfg := config{prefix: "a"}
+	for _, n := range []int{0, maxWorkerCount + 1} {
+		cfg.workers = n
+		if validateInputs(cfg) == nil {
+			t.Fatal("invalid workers accepted")
+		}
 	}
-	workers = maxWorkerCount + 1
-	if err := validateInputs(); err == nil {
-		t.Fatal("expected excessive worker count to be rejected")
-	}
-
-	workers = 1
-	dryRun, includePrivateExports = true, true
-	if err := validateInputs(); err == nil {
-		t.Fatal("expected private exports with dry-run to be rejected")
+	cfg.workers = 1
+	cfg.dryRun, cfg.includePrivateExports = true, true
+	if validateInputs(cfg) == nil {
+		t.Fatal("private exports with dry run accepted")
 	}
 }
 
 func TestValidateInputsForBenchmarkMode(t *testing.T) {
-	originalPrefix, originalPostfix, originalWorkers := prefix, postfix, workers
-	originalDryRun, originalPrivateExports := dryRun, includePrivateExports
-	originalBenchmark := benchmarkDuration
-	t.Cleanup(func() {
-		prefix, postfix, workers = originalPrefix, originalPostfix, originalWorkers
-		dryRun, includePrivateExports = originalDryRun, originalPrivateExports
-		benchmarkDuration = originalBenchmark
-	})
-
-	prefix, postfix = "", ""
-	workers = 1
-	dryRun, includePrivateExports = false, false
-	benchmarkDuration = time.Second
-	if err := validateInputs(); err != nil {
-		t.Fatalf("valid benchmark mode rejected: %v", err)
+	cfg := config{workers: 1, benchmarkDuration: time.Second}
+	if err := validateInputs(cfg); err != nil {
+		t.Fatal(err)
 	}
-
-	prefix = "a"
-	if err := validateInputs(); err == nil {
-		t.Fatal("expected benchmark with a vanity pattern to be rejected")
+	cfg.prefix = "a"
+	if validateInputs(cfg) == nil {
+		t.Fatal("benchmark pattern accepted")
 	}
-	prefix = ""
-	dryRun = true
-	if err := validateInputs(); err == nil {
-		t.Fatal("expected benchmark with dry-run to be rejected")
+	cfg.prefix, cfg.dryRun = "", true
+	if validateInputs(cfg) == nil {
+		t.Fatal("benchmark dry run accepted")
 	}
 }
 
