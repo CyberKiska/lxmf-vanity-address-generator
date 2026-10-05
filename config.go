@@ -17,6 +17,8 @@ type config struct {
 	outPath               string
 	fallbackOut           string
 	saveRetryTimeout      time.Duration
+	maxAttempts           uint64
+	timeout               time.Duration
 	dryRun                bool
 	includePrivateExports bool
 	benchmarkDuration     time.Duration
@@ -37,6 +39,8 @@ func parseArgs(args []string, usage io.Writer) (config, error) {
 	flags.BoolVar(&cfg.allowInheritedWinACL, "allow-inherited-windows-acl", false, "On Windows, explicitly accept the output directory's inherited ACL for private files")
 	flags.StringVar(&cfg.fallbackOut, "fallback-out", "", "Preflighted secondary identity file for save recovery")
 	flags.DurationVar(&cfg.saveRetryTimeout, "save-retry-timeout", 0, "Save recovery deadline; 0 retries indefinitely (cannot interrupt blocked I/O)")
+	flags.Uint64Var(&cfg.maxAttempts, "max-attempts", 0, "Maximum reserved candidates; 0 is unlimited")
+	flags.DurationVar(&cfg.timeout, "timeout", 0, "Search timeout; 0 is unlimited (does not limit saving)")
 	if err := flags.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -60,6 +64,12 @@ func defaultWorkerCount() int {
 }
 
 func validateInputs(cfg config) error {
+	if cfg.timeout < 0 {
+		return fmt.Errorf("timeout must not be negative")
+	}
+	if cfg.benchmarkDuration > 0 && (cfg.timeout > 0 || cfg.maxAttempts > 0) {
+		return fmt.Errorf("benchmark cannot be combined with search limits")
+	}
 	if cfg.saveRetryTimeout < 0 {
 		return fmt.Errorf("save retry timeout must not be negative")
 	}

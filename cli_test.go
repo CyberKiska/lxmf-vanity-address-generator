@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -99,5 +100,42 @@ func TestCLIHelpDoesNotCreateFiles(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("help created files: %v", err)
+	}
+}
+
+func TestCLIExitCodesAndStreams(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want int
+	}{
+		{[]string{"--prefix", "f", "--workers", "1", "--dry-run"}, 0},
+		{[]string{"--prefix", "f", "--out", "missing-directory/saved"}, 1},
+		{[]string{"--prefix", "bad-pattern"}, 2},
+		{[]string{"--prefix", strings.Repeat("0", 32), "--workers", "1", "--dry-run", "--max-attempts", "1"}, 4},
+	} {
+		output, err := runCLI(t, t.TempDir(), test.args...)
+		code := 0
+		if err != nil {
+			exit, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatal(err)
+			}
+			code = exit.ExitCode()
+		}
+		if code != test.want {
+			t.Fatalf("args %v: exit %d want %d: %s", test.args, code, test.want, output)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCLIProcess$", "--", "--prefix", "f", "--workers", "1", "--dry-run")
+	cmd.Env = append(os.Environ(), "LXMF_VANITY_TEST_PROCESS=1")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout.String(), "search started") || !strings.Contains(stderr.String(), "search started") || !strings.Contains(stdout.String(), "Found matching address") {
+		t.Fatal("stream contract changed")
 	}
 }

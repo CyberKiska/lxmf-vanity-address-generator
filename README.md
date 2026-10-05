@@ -34,6 +34,8 @@ positional arguments are rejected before any output files are created.
 | `--out <path>` | Private identity file; defaults to `identity` |
 | `--fallback-out <path>` | Separately preflighted fallback file |
 | `--save-retry-timeout <duration>` | Recovery deadline between I/O operations; 0 retries indefinitely |
+| `--max-attempts <n>` | Exact reserved candidate cap; 0 is unlimited |
+| `--timeout <duration>` | Search limit; a completed winner is still saved |
 | `--dry-run` | Search until a match, then discard its private identity |
 | `--benchmark <duration>` | Measure complete secure generation without saving; e.g. `30s` |
 | `--include-private-exports` | Include reversible Base64/Base32 private exports in the sidecar |
@@ -123,7 +125,7 @@ Stdout contains the public result; banner, progress and notices use a bounded
 stderr queue. Pipe progress uses plain lines once per minute. Saving never waits
 for console writes. Owned private buffers are cleared before final output.
 Exit statuses: 0 success; 1 no verified saved identity/runtime failure; 2 usage
-error; 3 verified saved identity with deviations (including result delivery
+error; 4 search limit without a match; 3 verified saved identity with deviations (including result delivery
 failure); 130 cancellation or explicitly abandoned memory. Deviations include
 recovery/fallback names, failed metadata, moved directories, retained files and
 durability warnings. Inspect reported paths before retrying a search.

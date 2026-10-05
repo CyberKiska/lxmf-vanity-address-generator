@@ -24,3 +24,5 @@ All notable user-visible changes are recorded here.
 
 - Preflighted fallback output and bounded or unlimited save retries with fresh two-interrupt discard confirmation.
 - SIGHUP/SIGTERM/SIGINT cancellation, explicit recovery discard, and stable saved/deviation/cancellation exit statuses.
+
+- Search attempt and time limits with exit status 4; completed in-flight winners are preserved independently of search limits.

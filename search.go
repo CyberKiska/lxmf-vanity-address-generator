@@ -2,13 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
 )
 
+var errAttemptLimit = errors.New("search attempt limit reached")
+
 type searcher struct {
+	maxAttempts   uint64
+	reserved      atomic.Uint64
+	limited       atomic.Bool
 	matcher       addressMatcher
 	rng           io.Reader
 	stopOnMatch   bool
@@ -31,6 +37,8 @@ func (s *searcher) run(parent context.Context, workerCount int, result *Identity
 		return fmt.Errorf("secure random source is nil")
 	}
 	s.attempts.Store(0)
+	s.reserved.Store(0)
+	s.limited.Store(false)
 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -41,6 +49,11 @@ func (s *searcher) run(parent context.Context, workerCount int, result *Identity
 	var found bool
 	var firstError error
 	publish := func(identity *Identity, err error) {
+		if errors.Is(err, errAttemptLimit) {
+			s.limited.Store(true)
+			cancel()
+			return
+		}
 		if err != nil {
 			errorOnce.Do(func() { firstError = err })
 			cancel()
@@ -61,6 +74,9 @@ func (s *searcher) run(parent context.Context, workerCount int, result *Identity
 	}
 	if firstError != nil {
 		return firstError
+	}
+	if s.limited.Load() {
+		return errAttemptLimit
 	}
 	return parent.Err()
 }
@@ -85,6 +101,10 @@ func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publ
 		default:
 		}
 
+		if !s.reserveAttempt() {
+			publish(nil, errAttemptLimit)
+			return
+		}
 		if _, err := io.ReadFull(s.rng, randBuf[:]); err != nil {
 			publish(nil, fmt.Errorf("secure random source failed: %w", err))
 			return
@@ -113,4 +133,19 @@ func flushAttempts(localAttempts *uint64, totalAttempts *atomic.Uint64) {
 	}
 	totalAttempts.Add(*localAttempts)
 	*localAttempts = 0
+}
+
+func (s *searcher) reserveAttempt() bool {
+	if s.maxAttempts == 0 {
+		return true
+	}
+	for {
+		n := s.reserved.Load()
+		if n >= s.maxAttempts {
+			return false
+		}
+		if s.reserved.CompareAndSwap(n, n+1) {
+			return true
+		}
+	}
 }

@@ -119,6 +119,7 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 		search.rng = deps.rng
 	}
 	search.stopOnMatch = cfg.benchmarkDuration == 0
+	search.maxAttempts = cfg.maxAttempts
 	progressCtx, stopProgress := context.WithCancel(searchCtx)
 	progressDone := make(chan struct{})
 	go func() {
@@ -129,6 +130,8 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 	stopTimer := func() {}
 	if cfg.benchmarkDuration > 0 {
 		runCtx, stopTimer = context.WithTimeout(searchCtx, cfg.benchmarkDuration)
+	} else if cfg.timeout > 0 {
+		runCtx, stopTimer = context.WithTimeout(searchCtx, cfg.timeout)
 	}
 	c.status("search started\n")
 	start := time.Now()
@@ -181,6 +184,8 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 		exitCode = 1
 		if errors.Is(err, context.Canceled) {
 			exitCode = 130
+		} else if errors.Is(err, errAttemptLimit) || errors.Is(err, context.DeadlineExceeded) {
+			exitCode = 4
 		}
 		text = fmt.Sprintf("Search failed: %v\n", err)
 	} else {
