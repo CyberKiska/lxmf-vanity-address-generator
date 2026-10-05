@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"math/big"
 	"sync/atomic"
 	"time"
 )
 
-func monitorProgress(ctx context.Context, attempts *atomic.Uint64, writer io.Writer) {
-	ticker := time.NewTicker(time.Second)
+func monitorProgress(ctx context.Context, attempts *atomic.Uint64, c *console, terminal bool) {
+	interval := time.Minute
+	if terminal {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	lastAttempts := uint64(0)
@@ -27,7 +30,11 @@ func monitorProgress(ctx context.Context, attempts *atomic.Uint64, writer io.Wri
 			lastAttempts = current
 			lastTime = now
 			avgRate := attemptsPerSecond(current, now.Sub(startTime))
-			fmt.Fprintf(writer, "\r  Speed: %s/s (avg: %s/s) | Total: %s        ",
+			format := "Speed: %s/s (avg: %s/s) | Total: %s\n"
+			if terminal {
+				format = "\rSpeed: %s/s (avg: %s/s) | Total: %s        "
+			}
+			c.status(format,
 				formatNumber(rate),
 				formatNumber(avgRate),
 				formatNumber(current))

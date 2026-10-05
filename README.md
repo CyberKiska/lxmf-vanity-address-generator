@@ -32,6 +32,8 @@ positional arguments are rejected before any output files are created.
 | `--postfix <hex>` | Desired address suffix |
 | `--workers <int>` | Parallel workers, 1–256; defaults to `GOMAXPROCS` |
 | `--out <path>` | Private identity file; defaults to `identity` |
+| `--fallback-out <path>` | Separately preflighted fallback file |
+| `--save-retry-timeout <duration>` | Recovery deadline between I/O operations; 0 retries indefinitely |
 | `--dry-run` | Search until a match, then discard its private identity |
 | `--benchmark <duration>` | Measure complete secure generation without saving; e.g. `30s` |
 | `--include-private-exports` | Include reversible Base64/Base32 private exports in the sidecar |
@@ -101,11 +103,30 @@ Filesystems without hard links use exclusive creation; that fallback is not
 crash-atomic. Directory sync is best effort, so portable power-loss durability
 is not guaranteed. Keep backups.
 
-A late primary-file collision retains the complete temporary identity and
-reports its recovery path. A metadata failure leaves the primary identity
-saved and returns an error describing the partial result. Preserve the reported
-file before retrying with a new name. The identity is saved before success is
-printed, and a completed match survives cancellation during worker shutdown.
+Every winner is re-derived and checked against the pattern before writing.
+Completed temporary and published files are verified through protected, bounded
+read-back. A verified recovery file is a saved identity. Written but unverified
+files are reported separately. Repeated retries keep a bounded number of files.
+A hard link is an alias of one inode; publication corruption is checked again
+and a recovery copy is rebuilt from memory when necessary.
+
+Recoverable save failures retry with delays of 1, 2, 4 seconds up to 30 seconds,
+using the original directory handles. Configure `--fallback-out` before a long
+search. `--save-retry-timeout` applies between operations and cannot interrupt a
+blocked filesystem call. During recovery, two fresh Ctrl-C presses within ten
+seconds abandon the in-memory winner; any retained files remain reported.
+SIGTERM/SIGHUP do not confirm discard. Handled cancellation preserves an
+in-flight completed match. SIGQUIT, SIGKILL, runtime-fatal entropy failures and
+machine loss are outside this recovery guarantee.
+
+Stdout contains the public result; banner, progress and notices use a bounded
+stderr queue. Pipe progress uses plain lines once per minute. Saving never waits
+for console writes. Owned private buffers are cleared before final output.
+Exit statuses: 0 success; 1 no verified saved identity/runtime failure; 2 usage
+error; 3 verified saved identity with deviations (including result delivery
+failure); 130 cancellation or explicitly abandoned memory. Deviations include
+recovery/fallback names, failed metadata, moved directories, retained files and
+durability warnings. Inspect reported paths before retrying a search.
 
 Each candidate consumes 64 fresh bytes from the OS-backed `crypto/rand.Reader`.
 Private buffers are cleared on a best-effort basis; Go cannot guarantee complete

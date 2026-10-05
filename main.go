@@ -9,9 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"runtime"
-	"syscall"
 	"time"
 )
 
@@ -27,35 +25,74 @@ func main() {
 	os.Exit(run(context.Background(), cfg, os.Stdout, os.Stderr))
 }
 
-func run(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
-	if err := execute(ctx, cfg, stdout, stderr); err != nil {
-		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
-	}
-	return 0
+// Tests use explicit dependencies, never package-level randomness overrides.
+type runDependencies struct {
+	rng            io.Reader
+	openTarget     func(string) (*outputTarget, error)
+	signals        <-chan os.Signal
+	consoleTimeout time.Duration
 }
 
-func execute(ctx context.Context, cfg config, stdout, stderr io.Writer) error {
+func run(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
+	return runWithDependencies(ctx, cfg, stdout, stderr, runDependencies{})
+}
+func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writer, deps runDependencies) int {
+	searchCtx, cancelSearch := context.WithCancel(ctx)
+	defer cancelSearch()
+	input := deps.signals
+	if input == nil {
+		signals, stop := processSignals()
+		defer stop()
+		input = signals
+	}
+	signals := newSignalOwner(input, cancelSearch)
+	defer signals.close()
+	c := newConsole(stderr)
+	closeTimeout := deps.consoleTimeout
+	if closeTimeout == 0 {
+		closeTimeout = 2 * time.Second
+	}
+	defer c.close(closeTimeout)
+	fail := func(err error) int { c.status("Error: %v\n", err); return 1 }
 	if err := selfTest(knownAnswerIdentity()); err != nil {
-		return err
+		return fail(err)
 	}
 	writesOutput := !cfg.dryRun && cfg.benchmarkDuration == 0
 	if err := validatePlatformOutputSecurity(runtime.GOOS, writesOutput, cfg.allowInheritedWinACL); err != nil {
-		return err
+		return fail(err)
 	}
-	var output *outputTarget
+	var output, fallback *outputTarget
 	if writesOutput {
+		open := deps.openTarget
+		if open == nil {
+			open = openOutputTarget
+		}
 		var err error
-		output, err = openOutputTarget(cfg.outPath)
+		output, err = open(cfg.outPath)
 		if err != nil {
-			return err
+			return fail(err)
 		}
 		defer output.root.Close()
 		if err := output.preflight(); err != nil {
-			return err
+			return fail(err)
 		}
-		if runtime.GOOS == "windows" {
-			fmt.Fprintln(stderr, "Warning: inherited Windows ACL explicitly accepted; the output directory must already be restricted to your account.")
+	}
+	if writesOutput && cfg.fallbackOut != "" {
+		open := deps.openTarget
+		if open == nil {
+			open = openOutputTarget
+		}
+		var err error
+		fallback, err = open(cfg.fallbackOut)
+		if err != nil {
+			return fail(err)
+		}
+		defer fallback.root.Close()
+		if targetsOverlap(output, fallback) {
+			return fail(fmt.Errorf("primary and fallback identity/sidecar paths overlap"))
+		}
+		if err := fallback.preflight(); err != nil {
+			return fail(err)
 		}
 	}
 
@@ -64,92 +101,119 @@ func execute(ctx context.Context, cfg config, stdout, stderr io.Writer) error {
 		var err error
 		matcher, err = newAddressMatcher(cfg.prefix, cfg.postfix)
 		if err != nil {
-			return err
+			return fail(err)
 		}
 	}
-
-	if cfg.benchmarkDuration > 0 {
-		fmt.Fprintln(stdout, "Benchmarking full LXMF identity generation...")
-		fmt.Fprintf(stdout, "  Duration: %s\n", cfg.benchmarkDuration)
-	} else {
-		fmt.Fprintln(stdout, "Searching for LXMF vanity address...")
-		if cfg.prefix != "" {
-			fmt.Fprintf(stdout, "  Prefix:  %s\n", cfg.prefix)
-		}
-		if cfg.postfix != "" {
-			fmt.Fprintf(stdout, "  Postfix: %s\n", cfg.postfix)
-		}
-		fmt.Fprintf(stdout, "  Expected attempts: %s (geometric expectation; not a deadline)\n", expectedAttempts(len(cfg.prefix)+len(cfg.postfix)))
+	c.status("LXMF vanity search: prefix=%q postfix=%q workers=%d\n", cfg.prefix, cfg.postfix, cfg.workers)
+	if cfg.benchmarkDuration == 0 {
+		c.status("Expected attempts: %s (geometric expectation; not a deadline)\n", expectedAttempts(len(cfg.prefix)+len(cfg.postfix)))
 	}
-	fmt.Fprintf(stdout, "  Workers: %d\n", cfg.workers)
+	if len(cfg.prefix)+len(cfg.postfix) > 8 && cfg.fallbackOut == "" && writesOutput {
+		c.status("For expensive searches, configure --fallback-out in another protected directory.\n")
+	}
 	if cfg.dryRun {
-		fmt.Fprintln(stdout, "  Mode:    DRY RUN (matching private identity will not be saved)")
-		fmt.Fprintln(stderr, "Warning: --dry-run does not save the matching private identity, so it cannot be recovered from program output; use --benchmark for performance measurement.")
+		c.status("Warning: --dry-run discards the matching private identity.\n")
 	}
-	fmt.Fprintln(stdout)
-
-	searchContext, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-
 	search := newSearcher(matcher, rand.Reader)
+	if deps.rng != nil {
+		search.rng = deps.rng
+	}
 	search.stopOnMatch = cfg.benchmarkDuration == 0
-	progressContext, stopProgress := context.WithCancel(ctx)
+	progressCtx, stopProgress := context.WithCancel(searchCtx)
 	progressDone := make(chan struct{})
 	go func() {
 		defer close(progressDone)
-		monitorProgress(progressContext, &search.attempts, stdout)
+		monitorProgress(progressCtx, &search.attempts, c, isCharacterDevice(stderr))
 	}()
-
-	runContext := searchContext
-	stopBenchmark := func() {}
-	startTime := time.Now()
+	runCtx := searchCtx
+	stopTimer := func() {}
 	if cfg.benchmarkDuration > 0 {
-		runContext, stopBenchmark = context.WithTimeout(searchContext, cfg.benchmarkDuration)
+		runCtx, stopTimer = context.WithTimeout(searchCtx, cfg.benchmarkDuration)
 	}
+	c.status("search started\n")
+	start := time.Now()
 	var identity Identity
-	err := search.run(runContext, cfg.workers, &identity)
-	elapsed := time.Since(startTime)
-	stopBenchmark()
+	err := search.run(runCtx, cfg.workers, &identity)
+	elapsed := time.Since(start)
+	stopTimer()
 	stopProgress()
+	// Progress only queues messages, so joining it never waits for a console write.
 	<-progressDone
-	if cfg.benchmarkDuration > 0 {
-		if errors.Is(err, context.DeadlineExceeded) {
-			attempts := search.attempts.Load()
-			avgRate := attemptsPerSecond(attempts, elapsed)
-			fmt.Fprintf(stdout, "\nBenchmark complete: %s attempts in %s (%s/s average)\n", formatNumber(attempts), elapsed.Round(time.Microsecond), formatNumber(avgRate))
-			return nil
+	signals.phase("save")
+	var result saveResult
+	exitCode := 0
+	if err == nil && !cfg.dryRun && cfg.benchmarkDuration == 0 {
+		round := func() saveResult {
+			primary := output.saveIdentity(&identity, matcher, cfg.includePrivateExports)
+			if primary.saved() || primary.internal || fallback == nil {
+				return primary
+			}
+			other := fallback.saveIdentity(&identity, matcher, cfg.includePrivateExports)
+			other.Unverified = append(other.Unverified, primary.Unverified...)
+			other.Deviations = append(other.Deviations, primary.Deviations...)
+			if other.saved() {
+				other.Deviations = appendUnique(other.Deviations, "saved at the preflighted fallback target")
+			}
+			return other
 		}
+		var abandoned bool
+		result, abandoned = recoverWinner(round, signals.recovery, cfg.saveRetryTimeout, c, func() { signals.phase("recovery") })
+		if abandoned {
+			exitCode = 130
+		}
+		if !result.saved() && !abandoned {
+			exitCode = 1
+		} else if len(result.Deviations) > 0 || len(result.Unverified) > 0 {
+			exitCode = 3
+		}
+	}
+	if search.workerWarning != nil && err == nil {
+		result.Deviations = appendUnique(result.Deviations, search.workerWarning.Error())
+		if result.saved() {
+			exitCode = 3
+		}
+	}
+	// Construct only public output, then clear the winner before any final write.
+	var text string
+	if cfg.benchmarkDuration > 0 && errors.Is(err, context.DeadlineExceeded) {
+		text = fmt.Sprintf("Benchmark complete: %s attempts in %s (%s/s average)\n", formatNumber(search.attempts.Load()), elapsed.Round(time.Microsecond), formatNumber(attemptsPerSecond(search.attempts.Load(), elapsed)))
+	} else if err != nil {
+		exitCode = 1
 		if errors.Is(err, context.Canceled) {
-			return fmt.Errorf("benchmark cancelled")
+			exitCode = 130
 		}
-		return err
-	}
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return fmt.Errorf("search cancelled")
+		text = fmt.Sprintf("Search failed: %v\n", err)
+	} else {
+		text = fmt.Sprintf("Found matching address: %s\n  Total attempts: %d\n", hex.EncodeToString(identity.Address[:]), search.attempts.Load())
+		for _, path := range result.Verified {
+			text += fmt.Sprintf("  Saved and verified: %s\n", path)
 		}
-		return err
-	}
-	defer wipeIdentitySecrets(&identity)
-
-	// Persist the expensive result before writing success output to a pipe that
-	// might have been closed by its reader.
-	if !cfg.dryRun {
-		if err := output.saveIdentity(&identity, cfg.includePrivateExports); err != nil {
-			return err
+		for _, path := range result.Unverified {
+			text += fmt.Sprintf("  Unverified retained file: %s\n", path)
+		}
+		for _, warning := range result.Deviations {
+			text += fmt.Sprintf("  Warning: %s\n", warning)
+		}
+		if !cfg.dryRun && !result.saved() {
+			text += fmt.Sprintf("  Identity not verified saved: %v\n", result.cause)
 		}
 	}
-	addrHex := hex.EncodeToString(identity.Address[:])
-	fmt.Fprintf(stdout, "\n✓ Found matching address: %s\n", addrHex)
-	fmt.Fprintf(stdout, "  Total attempts: %d\n", search.attempts.Load())
-
-	if cfg.dryRun {
-		return nil
+	wipeIdentitySecrets(&identity)
+	c.close(closeTimeout)
+	n, writeErr := io.WriteString(stdout, text)
+	if writeErr != nil || n != len(text) {
+		if result.saved() {
+			return 3
+		}
+		return 1
 	}
-
-	fmt.Fprintf(stdout, "  Saved to: %s\n", cfg.outPath)
-	if cfg.includePrivateExports {
-		fmt.Fprintf(stderr, "Warning: %s contains reversible private-key exports and must be protected like the identity file.\n", cfg.outPath+".txt")
+	return exitCode
+}
+func isCharacterDevice(writer io.Writer) bool {
+	f, ok := writer.(*os.File)
+	if !ok {
+		return false
 	}
-	return nil
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }

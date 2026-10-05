@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ type config struct {
 	postfix               string
 	workers               int
 	outPath               string
+	fallbackOut           string
+	saveRetryTimeout      time.Duration
 	dryRun                bool
 	includePrivateExports bool
 	benchmarkDuration     time.Duration
@@ -32,6 +35,8 @@ func parseArgs(args []string, usage io.Writer) (config, error) {
 	flags.BoolVar(&cfg.includePrivateExports, "include-private-exports", false, "Include reversible private-key exports in <out>.txt (sensitive)")
 	flags.DurationVar(&cfg.benchmarkDuration, "benchmark", 0, "Benchmark full identity generation for a duration (for example 30s); no identity is selected or saved")
 	flags.BoolVar(&cfg.allowInheritedWinACL, "allow-inherited-windows-acl", false, "On Windows, explicitly accept the output directory's inherited ACL for private files")
+	flags.StringVar(&cfg.fallbackOut, "fallback-out", "", "Preflighted secondary identity file for save recovery")
+	flags.DurationVar(&cfg.saveRetryTimeout, "save-retry-timeout", 0, "Save recovery deadline; 0 retries indefinitely (cannot interrupt blocked I/O)")
 	if err := flags.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -55,6 +60,12 @@ func defaultWorkerCount() int {
 }
 
 func validateInputs(cfg config) error {
+	if cfg.saveRetryTimeout < 0 {
+		return fmt.Errorf("save retry timeout must not be negative")
+	}
+	if (cfg.dryRun || cfg.benchmarkDuration > 0) && (cfg.fallbackOut != "" || cfg.saveRetryTimeout != 0) {
+		return fmt.Errorf("save recovery options require saving mode")
+	}
 	if cfg.benchmarkDuration < 0 {
 		return fmt.Errorf("benchmark duration must not be negative")
 	}
@@ -127,4 +138,20 @@ func isHex(s string) bool {
 		}
 	}
 	return true
+}
+
+func targetsOverlap(a, b *outputTarget) bool {
+	ai, e1 := a.root.Stat(".")
+	bi, e2 := b.root.Stat(".")
+	if e1 != nil || e2 != nil || !os.SameFile(ai, bi) {
+		return false
+	}
+	for _, left := range []string{a.name, a.name + ".txt"} {
+		for _, right := range []string{b.name, b.name + ".txt"} {
+			if left == right || (runtime.GOOS == "windows" || runtime.GOOS == "darwin") && strings.EqualFold(left, right) {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -405,7 +406,8 @@ func TestSaveIdentityDefaultMetadataContainsNoPrivateExports(t *testing.T) {
 	path := filepath.Join(dir, "identity")
 	identity := goldenIdentity(t)
 
-	if err := testOutput(t, path).saveIdentity(&identity, false); err != nil {
+	if result := testOutput(t, path).saveIdentity(&identity, addressMatcher{}, false); !result.saved() {
+		err := result.cause
 		t.Fatalf("saveIdentity failed: %v", err)
 	}
 
@@ -451,7 +453,8 @@ func TestSaveIdentityPrivateExportsRequireExplicitOptIn(t *testing.T) {
 	path := filepath.Join(dir, "identity")
 	identity := goldenIdentity(t)
 
-	if err := testOutput(t, path).saveIdentity(&identity, true); err != nil {
+	if result := testOutput(t, path).saveIdentity(&identity, addressMatcher{}, true); !result.saved() {
+		err := result.cause
 		t.Fatalf("saveIdentity failed: %v", err)
 	}
 	metadata, err := os.ReadFile(path + ".txt")
@@ -480,7 +483,7 @@ func TestSaveIdentityRejectsInconsistentDerivedFields(t *testing.T) {
 	identity := goldenIdentity(t)
 	identity.Address[0] ^= 0xff
 
-	if err := testOutput(t, path).saveIdentity(&identity, false); err == nil {
+	if result := testOutput(t, path).saveIdentity(&identity, addressMatcher{}, false); !result.internal {
 		t.Fatal("expected inconsistent identity to be rejected")
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -499,20 +502,11 @@ func TestSaveIdentityPreservesWinnerAfterLateCollision(t *testing.T) {
 				t.Fatal(err)
 			}
 			identity := goldenIdentity(t)
-			err := testOutput(t, path).saveIdentity(&identity, false)
-			if err == nil {
-				t.Fatal("expected collision error")
+			result := testOutput(t, path).saveIdentity(&identity, addressMatcher{}, false)
+			if !result.saved() || len(result.Deviations) == 0 {
+				t.Fatalf("expected saved collision deviation: %v", result)
 			}
-			var recovery *recoverableWriteError
-			savedPath := path
-			if suffix == "" {
-				if !errors.As(err, &recovery) {
-					t.Fatalf("expected recoverable identity: %v", err)
-				}
-				savedPath = recovery.recoveryPath
-			} else if !strings.Contains(err.Error(), "identity was saved") {
-				t.Fatalf("expected explicit partial success: %v", err)
-			}
+			savedPath := result.Verified[0]
 			data, readErr := os.ReadFile(savedPath)
 			if readErr != nil {
 				t.Fatal(readErr)
@@ -562,7 +556,7 @@ func TestWriteFileSafelyFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
 	path := filepath.Join(dir, "target")
 	output := testOutput(t, path)
 	linkUnavailable := func(string, string) error {
-		return errors.New("hard links unavailable")
+		return syscall.ENOTSUP
 	}
 
 	output.root = &faultDir{dirOps: output.root, link: linkUnavailable}
@@ -829,7 +823,7 @@ func TestOutputDirectoryReplacementCannotRedirectIdentity(t *testing.T) {
 			}
 			link := output.root.Link
 			if fallback {
-				link = func(string, string) error { return errors.New("no hard links") }
+				link = func(string, string) error { return syscall.ENOTSUP }
 			}
 			output.root = &faultDir{dirOps: output.root, link: link}
 			if err := output.writeFile(output.name, []byte("private data"), 0600, true); err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -18,6 +19,14 @@ func TestCLIProcess(t *testing.T) {
 	for i, arg := range os.Args {
 		if arg == "--" {
 			os.Args = append([]string{os.Args[0]}, os.Args[i+1:]...)
+			if os.Getenv("LXMF_VANITY_TEST_NONMATCH") == "1" {
+				cfg, err := parseArgs(os.Args[1:], io.Discard)
+				if err != nil {
+					t.Fatal(err)
+				}
+				code := runWithDependencies(context.Background(), cfg, os.Stdout, os.Stderr, runDependencies{rng: &repeatingReader{pattern: goldenRandomInput(t)}})
+				os.Exit(code)
+			}
 			main()
 			os.Exit(0)
 		}
