@@ -17,6 +17,7 @@ func TestIndependentEntropyAccountingAndPartialFailures(t *testing.T) {
 	}
 	rng := &countingReader{reader: &repeatingReader{pattern: goldenRandomInput(t)}}
 	search := newSearcher(addressMatcher{}, rng)
+	search.segmentLength = 1
 	search.stopOnMatch = false
 	search.maxAttempts = 9
 	var winner Identity

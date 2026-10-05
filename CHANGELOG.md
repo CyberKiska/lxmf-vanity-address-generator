@@ -26,3 +26,6 @@ All notable user-visible changes are recorded here.
 - SIGHUP/SIGTERM/SIGINT cancellation, explicit recovery discard, and stable saved/deviation/cancellation exit statuses.
 
 - Search attempt and time limits with exit status 4; completed in-flight winners are preserved independently of search limits.
+
+- The default segmented generator uses independent OS-backed draws for both inputs and refreshes the discarded X25519 half every 65,536 candidates; `--generator independent` remains available.
+- Corpus differential, segment-boundary, later-winner, entropy-accounting and zero steady-state-allocation checks cover the segmented path, including startup self-testing.

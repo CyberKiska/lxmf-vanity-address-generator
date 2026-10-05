@@ -19,6 +19,7 @@ type config struct {
 	saveRetryTimeout      time.Duration
 	maxAttempts           uint64
 	timeout               time.Duration
+	generator             string
 	dryRun                bool
 	includePrivateExports bool
 	benchmarkDuration     time.Duration
@@ -41,6 +42,7 @@ func parseArgs(args []string, usage io.Writer) (config, error) {
 	flags.DurationVar(&cfg.saveRetryTimeout, "save-retry-timeout", 0, "Save recovery deadline; 0 retries indefinitely (cannot interrupt blocked I/O)")
 	flags.Uint64Var(&cfg.maxAttempts, "max-attempts", 0, "Maximum reserved candidates; 0 is unlimited")
 	flags.DurationVar(&cfg.timeout, "timeout", 0, "Search timeout; 0 is unlimited (does not limit saving)")
+	flags.StringVar(&cfg.generator, "generator", "segmented", "Candidate generator: segmented or independent")
 	if err := flags.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -64,6 +66,9 @@ func defaultWorkerCount() int {
 }
 
 func validateInputs(cfg config) error {
+	if cfg.generator != "" && cfg.generator != "segmented" && cfg.generator != "independent" {
+		return fmt.Errorf("generator must be segmented or independent")
+	}
 	if cfg.timeout < 0 {
 		return fmt.Errorf("timeout must not be negative")
 	}

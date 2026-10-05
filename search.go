@@ -9,10 +9,13 @@ import (
 	"sync/atomic"
 )
 
+const defaultSegmentLength = 1 << 16
+
 var errAttemptLimit = errors.New("search attempt limit reached")
 
 type searcher struct {
 	maxAttempts   uint64
+	segmentLength int
 	reserved      atomic.Uint64
 	limited       atomic.Bool
 	matcher       addressMatcher
@@ -23,7 +26,7 @@ type searcher struct {
 }
 
 func newSearcher(matcher addressMatcher, rng io.Reader) *searcher {
-	return &searcher{matcher: matcher, rng: rng, stopOnMatch: true}
+	return &searcher{matcher: matcher, rng: rng, stopOnMatch: true, segmentLength: defaultSegmentLength}
 }
 
 func (s *searcher) run(parent context.Context, workerCount int, result *Identity) error {
@@ -32,6 +35,9 @@ func (s *searcher) run(parent context.Context, workerCount int, result *Identity
 	}
 	if workerCount < 1 || workerCount > maxWorkerCount {
 		return fmt.Errorf("invalid worker count %d", workerCount)
+	}
+	if s.segmentLength < 1 {
+		return fmt.Errorf("segment length must be positive")
 	}
 	if s.rng == nil {
 		return fmt.Errorf("secure random source is nil")
@@ -94,6 +100,7 @@ func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publ
 	defer wipeBytes(randBuf[:])
 	defer wipeIdentitySecrets(&identity)
 
+	left := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -105,14 +112,26 @@ func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publ
 			publish(nil, errAttemptLimit)
 			return
 		}
-		if _, err := io.ReadFull(s.rng, randBuf[:]); err != nil {
-			publish(nil, fmt.Errorf("secure random source failed: %w", err))
-			return
-		}
-
-		if err := deriveCandidate(&identity, &randBuf, &publicKey, &addrHashMaterial); err != nil {
-			publish(nil, err)
-			return
+		if left == 0 {
+			if _, err := io.ReadFull(s.rng, randBuf[:]); err != nil {
+				wipeBytes(randBuf[:])
+				publish(nil, fmt.Errorf("secure random source failed: %w", err))
+				return
+			}
+			err := deriveCandidate(&identity, &randBuf, &publicKey, &addrHashMaterial)
+			wipeBytes(randBuf[:])
+			if err != nil {
+				publish(nil, err)
+				return
+			}
+			left = s.segmentLength - 1
+		} else {
+			if _, err := io.ReadFull(s.rng, identity.Ed25519Seed[:]); err != nil {
+				publish(nil, fmt.Errorf("secure random source failed: %w", err))
+				return
+			}
+			rederiveSigningHalf(&identity, &publicKey, &addrHashMaterial)
+			left--
 		}
 
 		localAttempts++

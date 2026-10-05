@@ -120,6 +120,10 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 	}
 	search.stopOnMatch = cfg.benchmarkDuration == 0
 	search.maxAttempts = cfg.maxAttempts
+	if cfg.generator == "independent" {
+		search.segmentLength = 1
+	}
+	c.status("Generator: %s\n", cfg.generator)
 	progressCtx, stopProgress := context.WithCancel(searchCtx)
 	progressDone := make(chan struct{})
 	go func() {
@@ -179,7 +183,7 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 	// Construct only public output, then clear the winner before any final write.
 	var text string
 	if cfg.benchmarkDuration > 0 && errors.Is(err, context.DeadlineExceeded) {
-		text = fmt.Sprintf("Benchmark complete: %s attempts in %s (%s/s average)\n", formatNumber(search.attempts.Load()), elapsed.Round(time.Microsecond), formatNumber(attemptsPerSecond(search.attempts.Load(), elapsed)))
+		text = fmt.Sprintf("Benchmark complete: %s attempts in %s (%s/s average), generator=%s\n", formatNumber(search.attempts.Load()), elapsed.Round(time.Microsecond), formatNumber(attemptsPerSecond(search.attempts.Load(), elapsed)), cfg.generator)
 	} else if err != nil {
 		exitCode = 1
 		if errors.Is(err, context.Canceled) {

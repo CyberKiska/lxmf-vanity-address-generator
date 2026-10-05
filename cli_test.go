@@ -25,6 +25,7 @@ func TestCLIProcess(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				cfg.generator = "independent"
 				code := runWithDependencies(context.Background(), cfg, os.Stdout, os.Stderr, runDependencies{rng: &repeatingReader{pattern: goldenRandomInput(t)}})
 				os.Exit(code)
 			}

@@ -127,3 +127,14 @@ func validateIdentityConsistency(identity *Identity) error {
 	}
 	return nil
 }
+
+// Subsequent candidates reuse only the discarded segment's X25519 half.
+func rederiveSigningHalf(identity *Identity, public *[64]byte, material *[26]byte) {
+	generateEd25519Public(identity)
+	copy(public[32:], identity.Ed25519Public[:])
+	hash := sha256.Sum256(public[:])
+	copy(identity.Hash[:], hash[:16])
+	copy(material[10:], hash[:16])
+	address := sha256.Sum256(material[:])
+	copy(identity.Address[:], address[:16])
+}

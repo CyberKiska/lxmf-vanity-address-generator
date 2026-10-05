@@ -30,6 +30,7 @@ positional arguments are rejected before any output files are created.
 |---|---|
 | `--prefix <hex>` | Desired address prefix |
 | `--postfix <hex>` | Desired address suffix |
+| `--generator segmented\|independent` | Default segmented; independent redraws both halves for every candidate |
 | `--workers <int>` | Parallel workers, 1–256; defaults to `GOMAXPROCS` |
 | `--out <path>` | Private identity file; defaults to `identity` |
 | `--fallback-out <path>` | Separately preflighted fallback file |
@@ -130,10 +131,21 @@ failure); 130 cancellation or explicitly abandoned memory. Deviations include
 recovery/fallback names, failed metadata, moved directories, retained files and
 durability warnings. Inspect reported paths before retrying a search.
 
-Each candidate consumes 64 fresh bytes from the OS-backed `crypto/rand.Reader`.
-Private buffers are cleared on a best-effort basis; Go cannot guarantee complete
-memory erasure. RNS requires X25519, which is unavailable in Go's FIPS-only mode;
-that mode returns a normal unsupported-provider error.
+The default segmented generator draws 64 bytes at segment start, then a fresh
+32-byte Ed25519 seed for each discarded candidate, replacing the X25519 half
+after 65,536 candidates. Both independent secret inputs come from Go's
+OS-backed `crypto/rand.Reader`. `--generator independent` redraws both halves
+per candidate. This process emits at most one identity per segment; recovery
+copies are the same identity. Segment count does not bound wall-clock exposure,
+and cloned process/VM snapshots can duplicate state. Independent mode avoids
+deliberate reuse but does not make snapshots safe.
+
+Owned private buffers are cleared on handled returns, with no complete erasure
+guarantee for compiler/runtime copies, opaque provider objects, swap or crashes.
+RNS requires X25519, which is unavailable in Go's FIPS-only mode; startup returns
+a normal unsupported-provider error. Known-answer checks exercise the standard
+and segmented paths before searching; they are smoke checks, not proof of binary
+integrity or entropy quality.
 
 ## Verification
 

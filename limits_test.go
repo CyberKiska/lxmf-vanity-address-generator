@@ -10,6 +10,7 @@ func TestAttemptLimitIsExactAndKeepsWinner(t *testing.T) {
 	for _, workers := range []int{1, 8} {
 		matcher, _ := newAddressMatcher("0", "")
 		search := newSearcher(matcher, &repeatingReader{pattern: goldenRandomInput(t)})
+		search.segmentLength = 1
 		search.maxAttempts = 7
 		var winner Identity
 		err := search.run(context.Background(), workers, &winner)
