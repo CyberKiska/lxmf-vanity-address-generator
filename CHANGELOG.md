@@ -11,3 +11,7 @@ All notable user-visible changes are recorded here.
 ### Changed
 
 - CLI configuration is parsed independently; help succeeds and invalid arguments exit with status 2 before searching.
+
+### Fixed
+
+- A completed matching candidate survives another worker's returned error; the error remains a diagnostic.

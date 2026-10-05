@@ -9,15 +9,11 @@ import (
 )
 
 type searcher struct {
-	matcher     addressMatcher
-	rng         io.Reader
-	stopOnMatch bool
-	attempts    atomic.Uint64
-}
-
-type searchOutcome struct {
-	identity Identity
-	err      error
+	matcher       addressMatcher
+	rng           io.Reader
+	stopOnMatch   bool
+	attempts      atomic.Uint64
+	workerWarning error
 }
 
 func newSearcher(matcher addressMatcher, rng io.Reader) *searcher {
@@ -39,50 +35,34 @@ func (s *searcher) run(parent context.Context, workerCount int, result *Identity
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	outcomes := make(chan searchOutcome, 1)
-	var publishOnce sync.Once
+	// A worker error and a completed winner have separate slots. Joining all
+	// workers permits an in-flight match to win even after another worker fails.
+	var winnerOnce, errorOnce sync.Once
+	var found bool
+	var firstError error
 	publish := func(identity *Identity, err error) {
-		publishOnce.Do(func() {
-			var transfer searchOutcome
-			transfer.err = err
-			if identity != nil {
-				transfer.identity = *identity
-			}
-			outcomes <- transfer
-			wipeIdentitySecrets(&transfer.identity)
+		if err != nil {
+			errorOnce.Do(func() { firstError = err })
 			cancel()
-		})
+			return
+		}
+		winnerOnce.Do(func() { *result = *identity; found = true })
+		cancel()
 	}
-
 	var workersDone sync.WaitGroup
 	workersDone.Add(workerCount)
-	for i := 0; i < workerCount; i++ {
+	for range workerCount {
 		go s.worker(ctx, &workersDone, publish)
 	}
-
-	var outcome searchOutcome
-	defer wipeIdentitySecrets(&outcome.identity)
-	select {
-	case outcome = <-outcomes:
-	case <-parent.Done():
-		cancel()
-		workersDone.Wait()
-		// An in-flight candidate can finish during cancellation. Preserve its
-		// published result instead of discarding a completed private identity.
-		select {
-		case outcome = <-outcomes:
-		default:
-			return parent.Err()
-		}
-	}
-
-	cancel()
 	workersDone.Wait()
-	if outcome.err != nil {
-		return outcome.err
+	s.workerWarning = firstError
+	if found {
+		return nil
 	}
-	*result = outcome.identity
-	return nil
+	if firstError != nil {
+		return firstError
+	}
+	return parent.Err()
 }
 
 func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publish func(*Identity, error)) {
