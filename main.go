@@ -36,6 +36,9 @@ func run(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 }
 
 func execute(ctx context.Context, cfg config, stdout, stderr io.Writer) error {
+	if err := selfTest(knownAnswerIdentity()); err != nil {
+		return err
+	}
 	writesOutput := !cfg.dryRun && cfg.benchmarkDuration == 0
 	if err := validatePlatformOutputSecurity(runtime.GOOS, writesOutput, cfg.allowInheritedWinACL); err != nil {
 		return err

@@ -22,15 +22,6 @@ import (
 	"time"
 )
 
-const (
-	goldenX25519Private = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e5f"
-	goldenX25519Public  = "8f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285f"
-	goldenEd25519Seed   = "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
-	goldenEd25519Public = "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7"
-	goldenIdentityHash  = "aca31af0441d81dbec71e82da0b4b5f5"
-	goldenLXMFAddress   = "fae321c442e3c9bdcd7a3e79d850e03c"
-)
-
 // Preserve the original RNS 1.4.2 regression vector alongside the larger corpus
 // checked against every reference version and provider in CI.
 func TestDeriveCandidateMatchesReticulum142GoldenVector(t *testing.T) {
