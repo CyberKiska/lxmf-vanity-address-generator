@@ -6,29 +6,36 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"path/filepath"
 )
 
-func (o *outputTarget) writeIdentityInfo(identity *Identity, privateExports bool) error {
+func writePublicIdentityInfo(writer io.Writer, identity *Identity, filename string) {
 	var publicKey [64]byte
 	copy(publicKey[0:32], identity.X25519Public[:])
 	copy(publicKey[32:64], identity.Ed25519Public[:])
 
-	var info bytes.Buffer
-	info.Grow(768)
-	fmt.Fprintln(&info, "LXMF Vanity Address Identity")
-	fmt.Fprintln(&info, "============================")
-	fmt.Fprintln(&info)
-	fmt.Fprintf(&info, "Address (LXMF): %s\n", hex.EncodeToString(identity.Address[:]))
-	fmt.Fprintf(&info, "Identity Hash:  %s\n", hex.EncodeToString(identity.Hash[:]))
-	fmt.Fprintf(&info, "Full Specifier: <lxmf.delivery.%s:%s>\n\n",
+	fmt.Fprintln(writer, "LXMF Vanity Address Identity")
+	fmt.Fprintln(writer, "============================")
+	fmt.Fprintln(writer)
+	fmt.Fprintf(writer, "Address (LXMF): %s\n", hex.EncodeToString(identity.Address[:]))
+	fmt.Fprintf(writer, "Identity Hash:  %s\n", hex.EncodeToString(identity.Hash[:]))
+	fmt.Fprintf(writer, "Full Specifier: <lxmf.delivery.%s:%s>\n\n",
 		hex.EncodeToString(identity.Hash[:]),
 		hex.EncodeToString(identity.Address[:]),
 	)
-	fmt.Fprintln(&info, "Public Key (X25519 + Ed25519):")
-	fmt.Fprintf(&info, "  X25519 Public:  %s\n", hex.EncodeToString(identity.X25519Public[:]))
-	fmt.Fprintf(&info, "  Ed25519 Public: %s\n", hex.EncodeToString(identity.Ed25519Public[:]))
-	fmt.Fprintf(&info, "  Combined:       %s\n\n", hex.EncodeToString(publicKey[:]))
-	fmt.Fprintf(&info, "Private identity file: %q\n", o.path)
+	fmt.Fprintln(writer, "Public Key (X25519 + Ed25519):")
+	fmt.Fprintf(writer, "  X25519 Public:  %s\n", hex.EncodeToString(identity.X25519Public[:]))
+	fmt.Fprintf(writer, "  Ed25519 Public: %s\n", hex.EncodeToString(identity.Ed25519Public[:]))
+	fmt.Fprintf(writer, "  Combined:       %s\n\n", hex.EncodeToString(publicKey[:]))
+	fmt.Fprintf(writer, "Private identity file: %q\n", filepath.Base(filename))
+
+}
+
+func (o *outputTarget) writeIdentityInfo(identity *Identity, privateExports bool) error {
+	var info bytes.Buffer
+	info.Grow(1280)
+	writePublicIdentityInfo(&info, identity, o.name)
 	if !privateExports {
 		fmt.Fprintln(&info, "This metadata file contains public information only.")
 	}
