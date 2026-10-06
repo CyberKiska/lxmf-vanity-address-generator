@@ -10,6 +10,9 @@ import base64
 import contextlib
 import hashlib
 import io
+import importlib
+import inspect
+import re
 import json
 import os
 from pathlib import Path
@@ -25,9 +28,13 @@ MESSAGE = b"lxmf-vanity cross-language compatibility probe"
 PEER_PRIVATE = bytes([0x42]) * 32
 
 
+class Mismatch(ValueError):
+    """A tested mismatch with a public diagnostic."""
+
+
 def require(condition, message):
     if not condition:
-        raise ValueError(message)
+        raise Mismatch(message)
 
 
 def candidate_inputs():
@@ -43,7 +50,49 @@ def candidate_inputs():
         yield hashlib.sha512(b"PUBLIC LXMF TEST VECTOR" + bytes([i])).digest()
 
 
-def build_fixture(RNS):
+class IncompleteEnvironment(Exception):
+    """A specifically identified missing dependency."""
+
+
+class APIDrift(Exception):
+    """A recognised interface change prevents a requested check."""
+
+
+def load_lxmf(mode):
+    if mode == "off":
+        return None
+    try:
+        return importlib.import_module("LXMF")
+    except ModuleNotFoundError as exc:
+        if exc.name != "LXMF":
+            raise
+        if mode == "required":
+            raise IncompleteEnvironment("LXMF is not installed") from exc
+        print("LXMF unavailable: delivery registration was not checked", file=sys.stderr)
+        return None
+
+
+def check_lxmf_delivery(RNS, LXMF, identity, expected):
+    if not hasattr(LXMF, "APP_NAME") or not hasattr(LXMF, "LXMRouter"):
+        raise APIDrift("LXMF app-name/router API unavailable")
+    require(LXMF.APP_NAME == "lxmf", "LXMF app name mismatch")
+    method = getattr(LXMF.LXMRouter, "register_delivery_identity", None)
+    if method is None or "identity" not in inspect.signature(method).parameters:
+        raise APIDrift("LXMF delivery-registration API changed")
+    # Do not start a router or Reticulum instance. Execute upstream naming/hash
+    # construction, isolating only network registration and external storage.
+    with tempfile.TemporaryDirectory(prefix="lxmf-delivery-") as directory:
+        router = LXMF.LXMRouter.__new__(LXMF.LXMRouter)
+        router.delivery_destinations = {}
+        router.ratchetpath = directory
+        router.enforce_ratchets = False
+        with patch.object(RNS.Transport, "register_destination"):
+            destination = router.register_delivery_identity(identity)
+        require(destination is not None and destination.hash == expected,
+                "LXMF registered delivery address mismatch")
+
+
+def build_fixture(RNS, LXMF=None):
     vectors = []
     peer = RNS.Cryptography.X25519PrivateKey.from_private_bytes(PEER_PRIVATE).public_key()
     for index, raw in enumerate(candidate_inputs()):
@@ -63,6 +112,8 @@ def build_fixture(RNS):
         with patch.object(RNS.Transport, "register_destination"):
             destination = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, "lxmf", "delivery")
         require(destination.hash == address, f"vector {index}: destination constructor")
+        if LXMF is not None:
+            check_lxmf_delivery(RNS, LXMF, identity, address)
         signature = identity.sign(MESSAGE)
         public = RNS.Identity(create_keys=False)
         public.load_public_key(identity.get_public_key())
@@ -87,11 +138,16 @@ def check_rnid_import(bootstrap, value, expected_address, encoding=None):
     )
     # Neither the command nor captured output is safe to log: either can
     # contain a private export, including in argparse error messages.
+    if result.returncode == 2 and re.search(
+        r"unrecognized arguments: (?:-N|-H)(?:\s|$)", result.stderr
+    ):
+        raise APIDrift("rnid no-network/hash option API changed; import check skipped")
     require(result.returncode == 0, f"rnid {label} import exited with status {result.returncode}")
     require(expected_address in result.stdout, f"rnid {label} import did not report the expected destination")
 
 
-def check_cli(RNS, binary, provider):
+def check_cli(RNS, binary, provider, checks="all"):
+    interop = checks in ("interop", "all")
     binary = str(binary.resolve())
     repository = str(Path(__file__).resolve().parent.parent)
     bootstrap = f"import sys; sys.path.insert(0, {repository!r}); import verify; verify.load_reticulum({provider!r}); from RNS.Utilities.rnid import main; main()"
@@ -113,11 +169,16 @@ def check_cli(RNS, binary, provider):
             with contextlib.redirect_stdout(io.StringIO()):
                 args = argparse.Namespace(no_metadata=False, identity_file=str(path), provider=provider, expect_rns_version=None, manual_only=False)
                 require(verify.verify_identity(args) == 0, "CLI metadata/reference verification failed")
-            check_rnid_import(bootstrap, path, address.hex())
-            if exports:
+            if interop:
+                check_rnid_import(bootstrap, path, address.hex())
+            if exports and interop:
                 fields, _ = verify.parse_metadata(path.with_suffix(".txt").read_text(encoding="utf-8"))
                 check_rnid_import(bootstrap, fields[verify.BASE64_LABEL], address.hex(), "-b")
                 check_rnid_import(bootstrap, fields[verify.BASE32_LABEL], address.hex(), "-B")
+
+    if not interop:
+        print("CLI private-file and metadata core checks passed")
+        return
 
     # PUBLIC TEST KEY: the corpus's masked all-FF input guarantees a leading
     # hyphen, so this regression is tested on every run instead of by chance.
@@ -131,11 +192,28 @@ def check_cli(RNS, binary, provider):
     print("CLI private-file, metadata, vanity pattern and rnid export round-trips passed")
 
 
+def failure_code(exc):
+    if isinstance(exc, IncompleteEnvironment):
+        return 2, str(exc)
+    if isinstance(exc, APIDrift):
+        return 3, str(exc)
+    if isinstance(exc, ModuleNotFoundError) and exc.name in {"RNS", "cryptography", "serial", "cffi"}:
+        return 2, "required reference dependency is unavailable"
+    if isinstance(exc, subprocess.SubprocessError):
+        return 1, "unexpected interoperability subprocess failure or timeout"
+    if isinstance(exc, Mismatch):
+        return 1, str(exc)
+    # Do not dump arbitrary upstream exceptions or commands containing exports.
+    return 1, "unexpected oracle/runtime failure: " + type(exc).__name__
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--check", type=Path)
     output.add_argument("--write", type=Path)
+    parser.add_argument("--checks", choices=("core", "interop", "all"), default="all")
+    parser.add_argument("--lxmf", choices=("required", "auto", "off"), default="auto")
     parser.add_argument("--binary", type=Path, help="also test a compiled Go CLI")
     parser.add_argument("--expect-rns-version", help="optional exact CI version assertion")
     parser.add_argument("--provider", choices=("auto", "pyca", "internal"), default="auto")
@@ -146,27 +224,26 @@ def main():
         if args.expect_rns_version:
             require(version == args.expect_rns_version, f"expected RNS {args.expect_rns_version}, found {version}")
         print(f"Reference: RNS {version}; {RNS.Cryptography.backend()}; source {RNS.__file__!r}", file=sys.stderr)
-        fixture = build_fixture(RNS)
-        if args.check:
+        LXMF = load_lxmf(args.lxmf) if args.checks in ("core", "all") else None
+        if LXMF is not None:
+            print(f"LXMF reference: {getattr(LXMF, '__version__', 'unknown')}", file=sys.stderr)
+        fixture = build_fixture(RNS, LXMF) if args.checks in ("core", "all") else None
+        if args.check and fixture is not None:
             expected = json.loads(args.check.read_text(encoding="utf-8"))
             require(expected == fixture, "cryptographic fixture mismatch (reference version alone is not a mismatch)")
             print(f"All {len(fixture['vectors'])} deterministic vectors match {args.check}")
-        elif args.write:
+        elif args.write and fixture is not None:
             args.write.write_text(json.dumps(fixture, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             print(f"Wrote public test vectors to {args.write}")
-        elif not args.binary:
+        elif not args.binary and fixture is not None:
             print(json.dumps(fixture, indent=2, sort_keys=True))
         if args.binary:
-            check_cli(RNS, args.binary, args.provider)
+            check_cli(RNS, args.binary, args.provider, args.checks)
         return 0
     except Exception as exc:
-        # Never dump a failed command containing private export arguments.
-        if isinstance(exc, subprocess.SubprocessError):
-            message = "interoperability subprocess failed or timed out"
-        else:
-            message = str(exc)
-        print(f"Oracle failed: {message}", file=sys.stderr)
-        return 1
+        code, message = failure_code(exc)
+        print(f"Oracle failed (class {code}): {message}", file=sys.stderr)
+        return code
 
 
 if __name__ == "__main__":
