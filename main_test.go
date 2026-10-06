@@ -651,9 +651,23 @@ func BenchmarkAddressMatcher(b *testing.B) {
 }
 
 func BenchmarkSecureCandidate(b *testing.B) {
+	identity := goldenIdentity(b)
+	var public [64]byte
+	copy(public[:32], identity.X25519Public[:])
+	material := newAddressHashMaterial()
+	defer wipeIdentitySecrets(&identity)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := io.ReadFull(rand.Reader, identity.Ed25519Seed[:]); err != nil {
+			b.Fatal(err)
+		}
+		rederiveSigningHalf(&identity, &public, &material)
+	}
+}
+func BenchmarkSegmentStart(b *testing.B) {
 	var identity Identity
-	var input [identityPrivateKeySize]byte
-	var publicKey [64]byte
+	var input [64]byte
+	var public [64]byte
 	material := newAddressHashMaterial()
 	defer wipeIdentitySecrets(&identity)
 	defer wipeBytes(input[:])
@@ -662,9 +676,10 @@ func BenchmarkSecureCandidate(b *testing.B) {
 		if _, err := io.ReadFull(rand.Reader, input[:]); err != nil {
 			b.Fatal(err)
 		}
-		if err := deriveCandidate(&identity, &input, &publicKey, &material); err != nil {
+		if err := deriveCandidate(&identity, &input, &public, &material); err != nil {
 			b.Fatal(err)
 		}
+		wipeBytes(input[:])
 	}
 }
 
