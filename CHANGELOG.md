@@ -31,3 +31,5 @@ All notable user-visible changes are recorded here.
 - Corpus differential, segment-boundary, later-winner, entropy-accounting and zero steady-state-allocation checks cover the segmented path, including startup self-testing.
 
 - Public-only `--inspect` validates bounded regular files and preserves raw import encodings. Public sidecars now disclose only a quoted basename.
+
+- The verifier reports absent/skipped metadata explicitly and gives specific remediation for legacy sidecars containing unlabelled private exports.

@@ -172,7 +172,7 @@ python3 -m venv .venv
 
 On Windows the environment's executables are in `.venv\Scripts`.
 `verify.py` requires exactly 64 private bytes, bounds metadata reads, checks
-recognized metadata fields, and rejects conflicting/duplicate fields. It
+recognized metadata fields, rejects legacy unlabelled private exports, and rejects conflicting/duplicate fields. Missing sidecars and `--no-metadata` explicitly report skipped checks. It
 reports the actual RNS version, provider and import path. Missing RNS or a
 behavioral mismatch causes a nonzero exit.
 

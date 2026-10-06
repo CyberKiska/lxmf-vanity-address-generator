@@ -111,7 +111,7 @@ def check_cli(RNS, binary, provider):
             address = RNS.Destination.hash(identity, "lxmf", "delivery")
             require(address.hex().startswith("a") and address.hex().endswith("b"), "CLI vanity pattern mismatch")
             with contextlib.redirect_stdout(io.StringIO()):
-                args = argparse.Namespace(identity_file=str(path), provider=provider, expect_rns_version=None, manual_only=False)
+                args = argparse.Namespace(no_metadata=False, identity_file=str(path), provider=provider, expect_rns_version=None, manual_only=False)
                 require(verify.verify_identity(args) == 0, "CLI metadata/reference verification failed")
             check_rnid_import(bootstrap, path, address.hex())
             if exports:

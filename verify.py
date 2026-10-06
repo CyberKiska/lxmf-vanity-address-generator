@@ -133,9 +133,20 @@ def verify_txt_file(manual_address, identity_hash, public_key, raw_private, file
     except FileNotFoundError:
         if os.path.lexists(txt_file):
             raise ValueError("metadata is a dangling symlink")
+        print("Metadata not checked: no sidecar exists.")
         return None
     try:
         fields, lines = parse_metadata(content)
+        legacy_labels = {"Private Key (Base64)", "Private Key (Base32)", "Base64", "Base32"}
+        labels = {line.partition(":")[0] for line in lines}
+        legacy = bool(legacy_labels & labels) or (
+            PRIVATE_WARNING not in lines and (BASE64_LABEL in fields or BASE32_LABEL in fields)
+        )
+        if legacy:
+            raise ValueError(
+                "legacy sidecar contains unlabelled private exports; regenerate a public "
+                "sidecar with --inspect and delete the old file"
+            )
         expected = {
             "Address (LXMF)": manual_address.hex(),
             "Identity Hash": identity_hash.hex(),
@@ -176,6 +187,7 @@ def verify_txt_file(manual_address, identity_hash, public_key, raw_private, file
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("identity_file")
+    parser.add_argument("--no-metadata", action="store_true", help="explicitly skip sidecar checks")
     parser.add_argument("--manual-only", action="store_true", help="omit Reticulum checks; no reference compatibility claim")
     parser.add_argument("--expect-rns-version", help="optionally require an exact reference version for CI")
     parser.add_argument("--provider", choices=("auto", "pyca", "internal"), default="auto", help="reference provider to exercise")
@@ -205,7 +217,11 @@ def verify_identity(args):
     print(f"File: {filepath!r} (64-byte private identity; secret bytes hidden)")
     print(f"Identity Hash: {identity_hash.hex()}")
     print(f"LXMF Address: {address.hex()}")
-    metadata_result = verify_txt_file(address, identity_hash, public_key, raw_private, filepath)
+    if args.no_metadata:
+        print("Metadata not checked: --no-metadata explicitly skips sidecar verification.")
+        metadata_result = None
+    else:
+        metadata_result = verify_txt_file(address, identity_hash, public_key, raw_private, filepath)
     if args.manual_only:
         print("MANUAL-ONLY MODE: no Reticulum compatibility claim was tested.")
         return 1 if metadata_result is False else 0
