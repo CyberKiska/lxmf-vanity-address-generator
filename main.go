@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -56,6 +57,27 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 	fail := func(err error) int { c.status("Error: %v\n", err); return 1 }
 	if err := selfTest(knownAnswerIdentity()); err != nil {
 		return fail(err)
+	}
+	if cfg.inspectPath != "" {
+		var identity Identity
+		unmasked, err := inspectIdentity(cfg.inspectPath, &identity)
+		if err != nil {
+			wipeIdentitySecrets(&identity)
+			return fail(err)
+		}
+		var public bytes.Buffer
+		writePublicIdentityInfo(&public, &identity, cfg.inspectPath)
+		fmt.Fprintln(&public, "This metadata file contains public information only.")
+		wipeIdentitySecrets(&identity)
+		if unmasked {
+			c.status("Warning: unmasked X25519 input; imported bytes were preserved and no file was written.\n")
+		}
+		c.close(closeTimeout)
+		n, err := stdout.Write(public.Bytes())
+		if err != nil || n != public.Len() {
+			return 1
+		}
+		return 0
 	}
 	writesOutput := !cfg.dryRun && cfg.benchmarkDuration == 0
 	if err := validatePlatformOutputSecurity(runtime.GOOS, writesOutput, cfg.allowInheritedWinACL); err != nil {

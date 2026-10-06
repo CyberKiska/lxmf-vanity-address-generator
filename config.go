@@ -20,6 +20,8 @@ type config struct {
 	maxAttempts           uint64
 	timeout               time.Duration
 	generator             string
+	inspectPath           string
+	explicit              map[string]bool
 	dryRun                bool
 	includePrivateExports bool
 	benchmarkDuration     time.Duration
@@ -43,12 +45,15 @@ func parseArgs(args []string, usage io.Writer) (config, error) {
 	flags.Uint64Var(&cfg.maxAttempts, "max-attempts", 0, "Maximum reserved candidates; 0 is unlimited")
 	flags.DurationVar(&cfg.timeout, "timeout", 0, "Search timeout; 0 is unlimited (does not limit saving)")
 	flags.StringVar(&cfg.generator, "generator", "segmented", "Candidate generator: segmented or independent")
+	flags.StringVar(&cfg.inspectPath, "inspect", "", "Print public metadata for a 64-byte identity; write nothing")
 	if err := flags.Parse(args); err != nil {
 		return cfg, err
 	}
 	if flags.NArg() != 0 {
 		return cfg, fmt.Errorf("unexpected positional arguments %q; all options must use flags", flags.Args())
 	}
+	cfg.explicit = make(map[string]bool)
+	flags.Visit(func(f *flag.Flag) { cfg.explicit[f.Name] = true })
 	cfg.prefix = strings.ToLower(cfg.prefix)
 	cfg.postfix = strings.ToLower(cfg.postfix)
 	return cfg, validateInputs(cfg)
@@ -66,6 +71,14 @@ func defaultWorkerCount() int {
 }
 
 func validateInputs(cfg config) error {
+	if cfg.inspectPath != "" {
+		for name := range cfg.explicit {
+			if name != "inspect" && name != "json" {
+				return fmt.Errorf("--inspect cannot be combined with --%s", name)
+			}
+		}
+		return nil
+	}
 	if cfg.generator != "" && cfg.generator != "segmented" && cfg.generator != "independent" {
 		return fmt.Errorf("generator must be segmented or independent")
 	}

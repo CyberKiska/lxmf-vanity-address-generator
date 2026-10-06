@@ -29,3 +29,5 @@ All notable user-visible changes are recorded here.
 
 - The default segmented generator uses independent OS-backed draws for both inputs and refreshes the discarded X25519 half every 65,536 candidates; `--generator independent` remains available.
 - Corpus differential, segment-boundary, later-winner, entropy-accounting and zero steady-state-allocation checks cover the segmented path, including startup self-testing.
+
+- Public-only `--inspect` validates bounded regular files and preserves raw import encodings. Public sidecars now disclose only a quoted basename.

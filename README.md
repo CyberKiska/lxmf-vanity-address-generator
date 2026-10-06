@@ -32,6 +32,7 @@ positional arguments are rejected before any output files are created.
 | `--postfix <hex>` | Desired address suffix |
 | `--generator segmented\|independent` | Default segmented; independent redraws both halves for every candidate |
 | `--workers <int>` | Parallel workers, 1–256; defaults to `GOMAXPROCS` |
+| `--inspect <file>` | Print public metadata only; no search or writes |
 | `--out <path>` | Private identity file; defaults to `identity` |
 | `--fallback-out <path>` | Separately preflighted fallback file |
 | `--save-retry-timeout <duration>` | Recovery deadline between I/O operations; 0 retries indefinitely |
@@ -81,7 +82,7 @@ are not part of the mandatory CI matrix.
 Two files are produced:
 
 1. `<out>`: the sensitive 64-byte private identity.
-2. `<out>.txt`: public address, identity hash, public keys and full specifier.
+2. `<out>.txt`: public address, identity hash, public keys, full specifier and quoted private filename (no absolute directory).
 
 The sidecar is public-only unless `--include-private-exports` is supplied.
 With that option, **both files contain private identity material**. Base64 and
@@ -148,6 +149,17 @@ and segmented paths before searching; they are smoke checks, not proof of binary
 integrity or entropy quality.
 
 ## Verification
+
+Inspect a saved or recovery identity without Python:
+
+```bash
+./lxmf-vanity --inspect "$identity_dir/cafe"
+```
+
+Inspection writes only public metadata to stdout and creates no files. It rejects
+nonregular or non-64-byte inputs; imported encodings are preserved. Regenerate
+a public sidecar using a new temporary name and review it before replacing
+legacy metadata that contains unlabelled private exports.
 
 Use a Python environment with Reticulum installed:
 
