@@ -51,5 +51,33 @@ func selfTest(expected *Identity) error {
 	if expected == nil || actual != *expected {
 		return fmt.Errorf("self-test failed: known-answer mismatch")
 	}
+	return selfTestSegmented(rederiveSigningHalf)
+}
+
+func selfTestSegmented(transform func(*Identity, *[64]byte, *[26]byte)) error {
+	var input [64]byte
+	for i := range input {
+		input[i] = byte(i)
+	}
+	var actual, expected Identity
+	var public [64]byte
+	material := newAddressHashMaterial()
+	defer wipeBytes(input[:])
+	defer wipeIdentitySecrets(&actual)
+	defer wipeIdentitySecrets(&expected)
+	if err := deriveCandidate(&actual, &input, &public, &material); err != nil {
+		return err
+	}
+	for i := 32; i < 64; i++ {
+		input[i] ^= 0xa5
+	}
+	copy(actual.Ed25519Seed[:], input[32:])
+	transform(&actual, &public, &material)
+	if err := deriveCandidate(&expected, &input, &public, &material); err != nil {
+		return err
+	}
+	if actual != expected {
+		return fmt.Errorf("self-test failed: segmented derivation mismatch")
+	}
 	return nil
 }

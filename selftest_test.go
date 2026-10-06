@@ -23,3 +23,12 @@ func BenchmarkStartupSelfTest(b *testing.B) {
 		}
 	}
 }
+
+func TestSegmentedSelfTestDetectsBrokenTransform(t *testing.T) {
+	if err := selfTestSegmented(func(identity *Identity, public *[64]byte, material *[26]byte) {
+		rederiveSigningHalf(identity, public, material)
+		identity.Hash[0] ^= 1
+	}); err == nil {
+		t.Fatal("broken signing-half transform accepted")
+	}
+}
