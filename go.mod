@@ -1,4 +1,4 @@
-module reticulum-vanity-address
+module github.com/CyberKiska/lxmf-vanity-address-generator
 
 go 1.26.8
 
