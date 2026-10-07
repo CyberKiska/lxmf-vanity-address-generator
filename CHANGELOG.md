@@ -41,3 +41,7 @@ All notable user-visible changes are recorded here.
 - Refuse unsafe Unix directory ownership/write modes and check private-file ownership/mode before secret writes and during read-back. A portable explicit override reports accepted weaknesses; Windows retains acknowledgement of unverified ACLs.
 
 - Current RNS/LXMF versions are resolved exactly per reference run, dependencies are hash-pinned, and wheel provenance is recorded. Daily compatibility checks have a separate trusted failure-notification workflow.
+
+- Six native artifact smoke jobs, cross-host reproducibility checking, isolated attestation and owner-tag release publication use the exact same artifact bytes.
+- CI selects the toolchain from `go.mod`, checks all target vets/module hygiene, and runs Python tests on Linux/macOS/Windows.
+- Added security reporting, installation, checksum and attestation guidance.

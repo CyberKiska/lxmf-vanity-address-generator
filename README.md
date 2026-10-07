@@ -5,7 +5,30 @@ A cross-platform, parallel Go CLI that generates Reticulum identities whose
 The executable uses only the Go standard library. Python is used for optional
 verification and reference tests, never in the search loop.
 
-## Build and use
+## Install and first run
+
+Use the newest available binary bundle from [Releases](https://github.com/CyberKiska/lxmf-vanity-address-generator/releases).
+If no release has been published, use a trusted successful `main` run's Actions
+artifact or build from source. Owner-created `vMAJOR.MINOR.PATCH` (or `-rc.N`)
+tags publish the same smoke-tested and attested bytes after all gates pass.
+
+Extract the matching OS/architecture bundle and verify its checksum and
+provenance. On Linux:
+
+```bash
+sha256sum -c lxmf-vanity-linux-amd64.sha256
+gh attestation verify ./lxmf-vanity-linux-amd64 --repo CyberKiska/lxmf-vanity-address-generator
+chmod u+x ./lxmf-vanity-linux-amd64
+./lxmf-vanity-linux-amd64 --version
+```
+
+On macOS use `shasum -a 256 -c <binary>.sha256`. On Windows compare
+`(Get-FileHash <binary>.exe -Algorithm SHA256).Hash` with the bundled `.sha256`
+file, and use the same `gh attestation verify` command. Checksums detect
+corruption; attestations bind bytes to the build. Pull-request artifacts are
+unattested test builds. Read [SECURITY.md](SECURITY.md) before creating an identity.
+
+Build and use from source:
 
 Go 1.27.1 is the tested release toolchain (`go.mod` retains its 1.26.8 language requirement).
 
@@ -216,9 +239,9 @@ make build-all     # Linux/macOS/Windows, amd64/arm64
 make clean         # removes known build binaries; preserves identities
 ```
 
-In **Actions → Build binaries → a successful run → Summary**, use the
-**Download** links for Linux, macOS or Windows (amd64/arm64). The same six
-bundles appear in the run's **Artifacts** section.
+In **Actions → Build binaries → a successful run → Artifacts**, download the
+matching Linux/macOS/Windows bundle for amd64/arm64. Bundles include checksums
+and build information and expire after 60 days. Published releases persist.
 
 CI uses the single release Go toolchain for tests and builds; it does not
 multiply jobs by historical Go or RNS versions. The two RNS providers run
@@ -226,7 +249,11 @@ sequentially in one compatibility job.
 
 The release workflow gates six cgo-free PIE artifacts on platform tests,
 reference tests, race/fuzz/FIPS checks and `govulncheck`. Artifacts include SHA-256
-checksums and build information. Successful trusted `main` builds also receive
+checksums and build information. Downloaded artifacts are executed on all six matching native runners before
+attestation/release, and linux/amd64 is rebuilt on macOS for byte comparison.
+The build job holds read permission only; isolated attestation and publication
+jobs execute no project scripts or downloaded binaries. Successful trusted
+`main` and validated release-tag builds receive
 GitHub build-provenance attestations. Verify a downloaded binary with:
 
 ```bash
