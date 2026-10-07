@@ -46,6 +46,7 @@ positional arguments are rejected before any output files are created.
 | `--dry-run` | Search until a match, then discard its private identity |
 | `--benchmark <duration>` | Measure complete secure generation without saving; e.g. `30s` |
 | `--include-private-exports` | Include reversible Base64/Base32 private exports in the sidecar |
+| `--allow-weak-output-protection` | Explicitly accept failed/unavailable protection checks with specific notices |
 | `--allow-inherited-windows-acl` | Explicitly accept an already secured Windows directory's inherited ACL |
 
 At least one pattern is required outside benchmark mode. Search time is random:
@@ -95,10 +96,19 @@ Base32 are reversible encodings, not encryption. Never commit private output;
 ignore rules cannot cover arbitrary `--out` names. A short vanity prefix does
 not authenticate a correspondent: compare the full destination address.
 
-On Unix-like systems output files use mode `0600`. On Windows, mode bits do
+On Unix-like systems, the opened directory must be owned by the effective user
+or root and must not be group/other writable without sticky-entry protection.
+Sticky shared locations produce a notice; a private mode-0700 directory is
+preferred. Files must be regular, owned by the effective user and mode `0600`,
+checked through descriptors before secret writes and during verification.
+`--allow-weak-output-protection` explicitly accepts failed/unavailable policy
+checks with notices. Unix ACLs, remote-server enforcement and malicious
+filesystems are not verified by these mode checks. The OS, filesystem,
+administrator and same-user processes remain trusted. On Windows, mode bits do
 not enforce a private ACL. Private output is refused by default: restrict the
 output directory to your account using Windows security properties or `icacls`,
-then pass `--allow-inherited-windows-acl`. This option acknowledges the inherited
+then pass `--allow-weak-output-protection` (or the Windows-only alias
+`--allow-inherited-windows-acl`). This option acknowledges the inherited
 ACL; it neither installs nor verifies one.
 
 The program opens the parent directory before searching and uses that same

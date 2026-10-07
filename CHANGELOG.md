@@ -35,3 +35,7 @@ All notable user-visible changes are recorded here.
 - The verifier reports absent/skipped metadata explicitly and gives specific remediation for legacy sidecars containing unlabelled private exports.
 
 - Canonical Go module path and reproducible version stamping; `--version` remains available without cryptographic provider support.
+
+### Security
+
+- Refuse unsafe Unix directory ownership/write modes and check private-file ownership/mode before secret writes and during read-back. A portable explicit override reports accepted weaknesses; Windows retains acknowledgement of unverified ACLs.

@@ -16,6 +16,8 @@ type outputTarget struct {
 	root       dirOps
 	path, name string
 	exclusive  bool
+	allowWeak  bool
+	notices    []string
 	retained   []*ownedFile
 	deviations []string
 }
@@ -126,8 +128,8 @@ func (o *outputTarget) writeOpened(f fileOps, name string, data []byte) (*ownedF
 	if protectionErr == nil && !protected.Mode().IsRegular() {
 		protectionErr = fmt.Errorf("output is not a regular file")
 	}
-	if protectionErr == nil && protected.Mode().Perm() != 0600 && fileModeEnforced() {
-		protectionErr = fmt.Errorf("output mode is not 0600")
+	if protectionErr == nil {
+		protectionErr = o.protection(fileProtection(protected))
 	}
 	if err := errors.Join(statErr, chmodErr, protectionErr); err != nil {
 		return record, errors.Join(err, f.Close())
@@ -168,8 +170,8 @@ func (o *outputTarget) verifyOwned(record *ownedFile, data []byte, syncFile bool
 	if !info.Mode().IsRegular() || !os.SameFile(info, record.info) || info.Size() != int64(len(data)) {
 		return fmt.Errorf("verification: unexpected file identity/type/size at %s", o.fullPath(record.name))
 	}
-	if info.Mode().Perm() != 0600 && fileModeEnforced() {
-		return fmt.Errorf("verification: protection failed at %s", o.fullPath(record.name))
+	if err := o.protection(fileProtection(info)); err != nil {
+		return fmt.Errorf("verification: %w", err)
 	}
 	buf := make([]byte, len(data)+1)
 	defer wipeBytes(buf)
@@ -200,7 +202,33 @@ func (o *outputTarget) syncDirectory() error {
 	return nil
 }
 
+func (o *outputTarget) protection(err error) error {
+	if err == nil {
+		return nil
+	}
+	if !o.allowWeak {
+		return fmt.Errorf("output protection refused: %w; use --allow-weak-output-protection only for an intentionally trusted location", err)
+	}
+	o.notices = appendUnique(o.notices, "Weak output protection explicitly accepted: "+err.Error())
+	return nil
+}
 func (o *outputTarget) preflight() (err error) {
+	directory, err := o.root.Stat(".")
+	if err != nil {
+		return fmt.Errorf("inspect opened output directory: %w", err)
+	}
+	notice, policyErr := directoryProtection(directory)
+	if err := o.protection(policyErr); err != nil {
+		return err
+	}
+	if notice != "" {
+		o.notices = appendUnique(o.notices, notice)
+	}
+	// Advisory Git notice uses only directory entries, never Git commands/hooks.
+	if _, err := o.root.Lstat(".git"); err == nil {
+		o.notices = appendUnique(o.notices, "Output directory is a Git checkout; prefer a private directory outside source control.")
+	}
+
 	for _, name := range []string{o.name, o.name + ".txt"} {
 		if err := o.ensureDoesNotExist(name); err != nil {
 			return err

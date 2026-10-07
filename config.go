@@ -27,6 +27,7 @@ type config struct {
 	includePrivateExports bool
 	benchmarkDuration     time.Duration
 	allowInheritedWinACL  bool
+	allowWeakOutput       bool
 }
 
 func parseArgs(args []string, usage io.Writer) (config, error) {
@@ -48,6 +49,7 @@ func parseArgs(args []string, usage io.Writer) (config, error) {
 	flags.StringVar(&cfg.generator, "generator", "segmented", "Candidate generator: segmented or independent")
 	flags.StringVar(&cfg.inspectPath, "inspect", "", "Print public metadata for a 64-byte identity; write nothing")
 	flags.BoolVar(&cfg.showVersion, "version", false, "Print version, Go version and target without searching")
+	flags.BoolVar(&cfg.allowWeakOutput, "allow-weak-output-protection", false, "Explicitly accept failed/unavailable output protection checks")
 	if err := flags.Parse(args); err != nil {
 		return cfg, err
 	}

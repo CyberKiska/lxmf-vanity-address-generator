@@ -88,7 +88,10 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 		return 0
 	}
 	writesOutput := !cfg.dryRun && cfg.benchmarkDuration == 0
-	if err := validatePlatformOutputSecurity(runtime.GOOS, writesOutput, cfg.allowInheritedWinACL); err != nil {
+	if cfg.allowInheritedWinACL && runtime.GOOS != "windows" {
+		return fail(fmt.Errorf("--allow-inherited-windows-acl is only valid on Windows"))
+	}
+	if err := validatePlatformOutputSecurity(runtime.GOOS, writesOutput, runtime.GOOS == "windows" && (cfg.allowInheritedWinACL || cfg.allowWeakOutput)); err != nil {
 		return fail(err)
 	}
 	var output, fallback *outputTarget
@@ -103,6 +106,7 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 			return fail(err)
 		}
 		defer output.root.Close()
+		output.allowWeak = cfg.allowWeakOutput || (runtime.GOOS == "windows" && cfg.allowInheritedWinACL)
 		if err := output.preflight(); err != nil {
 			return fail(err)
 		}
@@ -118,6 +122,7 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 			return fail(err)
 		}
 		defer fallback.root.Close()
+		fallback.allowWeak = cfg.allowWeakOutput || (runtime.GOOS == "windows" && cfg.allowInheritedWinACL)
 		if targetsOverlap(output, fallback) {
 			return fail(fmt.Errorf("primary and fallback identity/sidecar paths overlap"))
 		}
@@ -126,6 +131,13 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 		}
 	}
 
+	for _, target := range []*outputTarget{output, fallback} {
+		if target != nil {
+			for _, notice := range target.notices {
+				c.status("Notice: %s\n", notice)
+			}
+		}
+	}
 	var matcher addressMatcher
 	if cfg.benchmarkDuration == 0 {
 		var err error

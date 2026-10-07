@@ -810,6 +810,7 @@ func testOutput(t *testing.T, path string) *outputTarget {
 	if err != nil {
 		t.Fatal(err)
 	}
+	output.allowWeak = runtime.GOOS == "windows"
 	t.Cleanup(func() { output.root.Close() })
 	return output
 }
