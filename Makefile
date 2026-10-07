@@ -5,7 +5,8 @@ PYTHON ?= python3
 RNS_FLAGS ?=
 BUILDFLAGS ?= -trimpath -buildvcs=false
 BUILDMODE ?= -buildmode=pie
-LDFLAGS ?= -s -w -buildid=
+VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo dev)
+LDFLAGS ?= -s -w -buildid= -X main.version=$(VERSION)
 
 # Build the binary
 build:

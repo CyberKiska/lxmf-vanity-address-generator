@@ -7,7 +7,11 @@ verification and reference tests, never in the search loop.
 
 ## Build and use
 
-Go 1.26.8 or newer is required; Go 1.27.1 is the recommended release toolchain.
+Go 1.27.1 is the tested release toolchain (`go.mod` retains its 1.26.8 language requirement).
+
+Install from source with `go install github.com/CyberKiska/lxmf-vanity-address-generator@latest`.
+The resulting command is named `lxmf-vanity-address-generator`; local Makefile
+builds and downloadable artifacts use `lxmf-vanity`.
 
 ```bash
 make build
@@ -32,6 +36,7 @@ positional arguments are rejected before any output files are created.
 | `--postfix <hex>` | Desired address suffix |
 | `--generator segmented\|independent` | Default segmented; independent redraws both halves for every candidate |
 | `--workers <int>` | Parallel workers, 1–256; defaults to `GOMAXPROCS` |
+| `--version` | Print build version, Go version and target |
 | `--inspect <file>` | Print public metadata only; no search or writes |
 | `--out <path>` | Private identity file; defaults to `identity` |
 | `--fallback-out <path>` | Separately preflighted fallback file |

@@ -35,6 +35,14 @@ type runDependencies struct {
 }
 
 func run(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
+	if cfg.showVersion {
+		text := versionText()
+		n, err := io.WriteString(stdout, text)
+		if err != nil || n != len(text) {
+			return 1
+		}
+		return 0
+	}
 	return runWithDependencies(ctx, cfg, stdout, stderr, runDependencies{})
 }
 func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writer, deps runDependencies) int {

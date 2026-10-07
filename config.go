@@ -21,6 +21,7 @@ type config struct {
 	timeout               time.Duration
 	generator             string
 	inspectPath           string
+	showVersion           bool
 	explicit              map[string]bool
 	dryRun                bool
 	includePrivateExports bool
@@ -46,6 +47,7 @@ func parseArgs(args []string, usage io.Writer) (config, error) {
 	flags.DurationVar(&cfg.timeout, "timeout", 0, "Search timeout; 0 is unlimited (does not limit saving)")
 	flags.StringVar(&cfg.generator, "generator", "segmented", "Candidate generator: segmented or independent")
 	flags.StringVar(&cfg.inspectPath, "inspect", "", "Print public metadata for a 64-byte identity; write nothing")
+	flags.BoolVar(&cfg.showVersion, "version", false, "Print version, Go version and target without searching")
 	if err := flags.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -71,6 +73,9 @@ func defaultWorkerCount() int {
 }
 
 func validateInputs(cfg config) error {
+	if cfg.showVersion {
+		return nil
+	}
 	if cfg.inspectPath != "" {
 		for name := range cfg.explicit {
 			if name != "inspect" && name != "json" {

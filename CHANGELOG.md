@@ -33,3 +33,5 @@ All notable user-visible changes are recorded here.
 - Public-only `--inspect` validates bounded regular files and preserves raw import encodings. Public sidecars now disclose only a quoted basename.
 
 - The verifier reports absent/skipped metadata explicitly and gives specific remediation for legacy sidecars containing unlabelled private exports.
+
+- Canonical Go module path and reproducible version stamping; `--version` remains available without cryptographic provider support.
