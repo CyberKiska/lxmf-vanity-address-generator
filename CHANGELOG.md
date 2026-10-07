@@ -39,3 +39,5 @@ All notable user-visible changes are recorded here.
 ### Security
 
 - Refuse unsafe Unix directory ownership/write modes and check private-file ownership/mode before secret writes and during read-back. A portable explicit override reports accepted weaknesses; Windows retains acknowledgement of unverified ACLs.
+
+- Current RNS/LXMF versions are resolved exactly per reference run, dependencies are hash-pinned, and wheel provenance is recorded. Daily compatibility checks have a separate trusted failure-notification workflow.

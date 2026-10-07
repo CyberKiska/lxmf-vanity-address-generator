@@ -1,0 +1,44 @@
+name: Report reference failures
+
+on:
+  workflow_run:
+    workflows: ['Reference compatibility']
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  notify-failure:
+    if: github.event.workflow_run.event == 'schedule' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      actions: read # Read only provenance data from the exact failed scheduled run.
+    concurrency:
+      group: upstream-compat-issue
+      cancel-in-progress: false
+    steps:
+      # No checkout, project/upstream execution, or downloaded executable.
+      - name: Open one compatibility issue if none is open
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_LINK: ${{ github.event.workflow_run.html_url }}
+          REFERENCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          existing=$(gh issue list --label upstream-compat --state open --json number --jq 'length')
+          if [ "$existing" -eq 0 ]; then
+            selected_rns=unavailable
+            selected_lxmf=unavailable
+            if gh run download "$REFERENCE_RUN_ID" --name reference-provenance --dir reports; then
+              if [ -f reports/reference-selection.json ]; then
+                selected_rns=$(jq -r '.rns | select(type == "string")' reports/reference-selection.json)
+                selected_lxmf=$(jq -r '.lxmf | select(type == "string")' reports/reference-selection.json)
+              fi
+            fi
+            gh label create upstream-compat --color B60205 --description 'Current upstream reference checks failed' --force
+            printf 'Reference compatibility failed.\n\nRun: %s\nSelected RNS: %s\nSelected LXMF: %s\n' "$RUN_LINK" "$selected_rns" "$selected_lxmf" > issue-body.txt
+            gh issue create --title 'Upstream reference compatibility failure' --label upstream-compat --body-file issue-body.txt
+          fi

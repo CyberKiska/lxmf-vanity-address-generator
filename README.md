@@ -71,17 +71,22 @@ The 64-byte private file loads directly with `RNS.Identity.from_file()` and
 `rnid`. Newly generated X25519 private bytes use Reticulum's canonical scalar
 mask. Existing imported encodings are never rewritten by the verifier.
 
-The mandatory CI reference is RNS **1.5.2**, checked against the 131-vector
-corpus and end-to-end tests with both PyCA and internal providers. They check
-complete private/public bytes,
-hashes, signatures, shared secrets, encryption round-trips, incoming SINGLE
-LXMF destinations, and actual `rnid` file/Base64/Base32 imports. CI checks out
-the exact reference commit.
+The reference workflow resolves the latest stable, non-yanked RNS and LXMF
+releases at run start, then installs those exact versions as wheels. It is
+configured to run daily and on builds, with both PyCA and internal providers.
+Per-run summaries and provenance artifacts record selected versions, providers,
+Python/pip versions and installed wheel hashes. The 1.4.2 fixture is historical;
+the unchanged 131-vector corpus is the byte-level contract. Tests include actual
+LXMF delivery registration, signatures, encryption, Go-file loading and `rnid`
+imports. Core mismatches or unavailable checks block builds. Only specifically
+recognised optional `rnid` option changes become an explicit skipped-check
+warning. Scheduled jobs may be delayed or disabled after repository inactivity.
 
-Verification accepts other installed RNS versions when their tested behavior
-matches. An optional version assertion is available for reproducible testing;
-this is not a guarantee about untested future releases. Older RNS releases
-are not part of the mandatory CI matrix.
+The Base64 export is URL-safe for `rnid -M=<value>`; the equals form is necessary
+when an encoded value begins with `-`. Real private exports should never be
+passed on a command line, where process listings and shell history expose them.
+Applications expecting standard Base64 should receive the 64-byte identity file
+instead. No single mandatory reference version is embedded in the tool.
 
 ## Output protection and recovery
 

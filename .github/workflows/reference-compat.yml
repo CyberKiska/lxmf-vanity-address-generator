@@ -1,0 +1,88 @@
+name: Reference compatibility
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * *'
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      rns: ${{ steps.resolve.outputs.rns }}
+      lxmf: ${{ steps.resolve.outputs.lxmf }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        env:
+          GOTOOLCHAIN: auto # Let the pinned action select go.mod's toolchain; it then sets local.
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.7'
+      - name: Resolve current stable reference versions
+        id: resolve
+        run: python scripts/install_reference.py --resolve-only
+      - name: Install exact selected wheels and hashed dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python scripts/install_reference.py
+      - name: Mandatory core and explicitly classified interop checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod)"
+          make build
+          for provider in pyca internal; do
+            .venv/bin/python scripts/rns_compatibility_oracle.py \
+              --check testdata/rns-identity-vectors.json --binary lxmf-vanity \
+              --checks core --lxmf required --provider "$provider" 2>&1 | tee -a reference-checks.log
+            status=0
+            .venv/bin/python scripts/rns_compatibility_oracle.py \
+              --binary lxmf-vanity --checks interop --provider "$provider" \
+              2>&1 | tee -a reference-checks.log || status=$?
+            if [ "$status" -eq 3 ]; then
+              echo "::warning::Recognised rnid interface drift; requested interop checks were not completed."
+              echo "Interop ($provider): recognised interface drift, checks skipped." >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$status" -ne 0 ]; then
+              exit "$status"
+            fi
+          done
+      - name: Record selected versions, provider output and wheel provenance
+        if: always()
+        env:
+          SELECTED_RNS: ${{ steps.resolve.outputs.rns }}
+          SELECTED_LXMF: ${{ steps.resolve.outputs.lxmf }}
+        run: |
+          printf 'Selected references: RNS %s; LXMF %s\n' "$SELECTED_RNS" "$SELECTED_LXMF" >> "$GITHUB_STEP_SUMMARY"
+          for report in reference-provenance.json reference-checks.log; do
+            if [ -f "$report" ]; then
+              printf '\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+              printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: reference-provenance
+          if-no-files-found: warn
+          path: |
+            reference-selection.json
+            reference-install.json
+            dependencies-install.json
+            reference-provenance.json
+            reference-checks.log
+
