@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 )
@@ -217,6 +218,11 @@ func (o *outputTarget) verifyOwned(record *ownedFile, data []byte, syncFile bool
 	return nil
 }
 func (o *outputTarget) syncDirectory() error {
+	if runtime.GOOS == "windows" {
+		// Go opens directories for reading only; FlushFileBuffers requires a
+		// writable handle. Report this platform limitation explicitly.
+		return fmt.Errorf("directory sync unsupported on this filesystem; power-loss durability is not verified")
+	}
 	f, err := o.root.OpenFile(".", os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("directory durability unavailable: %w", err)
@@ -224,7 +230,7 @@ func (o *outputTarget) syncDirectory() error {
 	syncErr := f.Sync()
 	closeErr := f.Close()
 	if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
-		return fmt.Errorf("directory sync unsupported on this filesystem; power-loss durability is not verified")
+		return errors.Join(fmt.Errorf("directory sync unsupported on this filesystem; power-loss durability is not verified"), closeErr)
 	}
 	if err := errors.Join(syncErr, closeErr); err != nil {
 		return fmt.Errorf("directory sync/close: %w", err)

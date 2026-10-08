@@ -19,6 +19,7 @@ All notable user-visible changes are recorded here.
 - Blocked progress and closed pipes no longer delay saving a winner; final delivery failures return status 3 for a saved identity.
 - Persistence rechecks the pattern, verifies exact bytes, preserves complete temporaries, detects hard-link corruption, and bounds retained recovery files.
 - Explicit recovery discard returns cancellation status 130 even when unverified files and warnings remain.
+- Directory-sync limitations preserve other errors; artifact smoke accepts only the explicitly reported Windows durability limitation.
 - Preflight exercises writes, sync, publication and read-back before searching. Moved output directories remain anchored and are reported as saved deviations.
 
 ### Added

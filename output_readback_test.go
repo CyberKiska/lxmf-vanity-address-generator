@@ -4,9 +4,26 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
+
+func TestUnsupportedDirectorySyncRetainsCloseFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory flushing is explicitly unavailable through Go on Windows")
+	}
+	out := testOutput(t, filepath.Join(t.TempDir(), "saved"))
+	closeErr := errors.New("injected directory close failure")
+	out.root = &faultDir{dirOps: out.root, rules: []faultRule{
+		{op: "sync", err: syscall.EINVAL}, {op: "close", err: closeErr},
+	}}
+	err := out.syncDirectory()
+	if !errors.Is(err, closeErr) || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("unsupported sync hid another failure: %v", err)
+	}
+}
 
 func TestSaveRejectsConsistentNonmatchingCandidate(t *testing.T) {
 	identity := goldenIdentity(t)

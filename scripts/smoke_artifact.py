@@ -3,11 +3,27 @@
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import stat
 import subprocess
 import tempfile
+
+
+def check_generation(result, target_os, path):
+    saved = json.loads(result.stdout)
+    if result.returncode != 0:
+        # Directory flushing is unavailable through Go on Windows. Every other
+        # saved deviation still fails the artifact gate.
+        unsupported = "directory sync unsupported on this filesystem; power-loss durability is not verified"
+        if not (target_os == "windows" and result.returncode == 3
+                and saved["status"] == "partial"
+                and saved["deviations"] == [unsupported]
+                and not saved["unverified_files"]):
+            raise ValueError(f"artifact generation failed (status {result.returncode})")
+    if saved["verified_files"] != [str(path)]:
+        raise ValueError("artifact did not verify the requested identity file")
 
 
 def main():
@@ -30,16 +46,11 @@ def main():
     subprocess.run([str(binary), "--benchmark", "1s", "--workers", "1"], check=True, timeout=15)
     with tempfile.TemporaryDirectory(prefix="lxmf-smoke-") as directory:
         path = Path(directory) / "saved"
-        command = [str(binary), "--prefix", "0", "--workers", "1", "--out", str(path)]
+        command = [str(binary), "--prefix", "0", "--workers", "1", "--out", str(path), "--json"]
         if target_os == "windows":
             command.append("--allow-weak-output-protection")
         result = subprocess.run(command, capture_output=True, text=True, timeout=15)
-        if result.returncode != 0:
-            # Directory flushing can be unsupported on Windows. Every other
-            # saved deviation still fails the artifact gate.
-            if not (target_os == "windows" and result.returncode == 3
-                    and "directory" in result.stdout and "durability" in result.stdout):
-                raise ValueError(f"artifact generation failed (status {result.returncode})")
+        check_generation(result, target_os, path)
         if path.stat().st_size != 64 or not Path(str(path) + ".txt").is_file():
             raise ValueError("artifact did not save identity and metadata")
         inspected = subprocess.run([str(binary), "--inspect", str(path)], check=True,
