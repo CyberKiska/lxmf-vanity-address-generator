@@ -107,7 +107,8 @@ def build_fixture(RNS, LXMF=None):
         require(unmasked.get_private_key() == raw, f"vector {index}: raw private round-trip")
         require(identity.get_public_key() == unmasked.get_public_key(), f"vector {index}: raw/masked public keys")
         address = RNS.Destination.hash(identity, "lxmf", "delivery")
-        require(address == RNS.Destination.hash_from_name_and_identity("lxmf.delivery", identity), f"vector {index}: destination APIs disagree")
+        require(address == RNS.Destination.hash_from_name_and_identity("lxmf.delivery", identity),
+                f"vector {index}: destination APIs disagree")
         # Only networking is disabled: execute the real constructor and hashing.
         with patch.object(RNS.Transport, "register_destination"):
             destination = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, "lxmf", "delivery")
@@ -150,7 +151,8 @@ def check_cli(RNS, binary, provider, checks="all"):
     interop = checks in ("interop", "all")
     binary = str(binary.resolve())
     repository = str(Path(__file__).resolve().parent.parent)
-    bootstrap = f"import sys; sys.path.insert(0, {repository!r}); import verify; verify.load_reticulum({provider!r}); from RNS.Utilities.rnid import main; main()"
+    bootstrap = (f"import sys; sys.path.insert(0, {repository!r}); import verify; "
+                 f"verify.load_reticulum({provider!r}); from RNS.Utilities.rnid import main; main()")
     for exports in (False, True):
         with tempfile.TemporaryDirectory(prefix="lxmf-compat-") as directory:
             path = Path(directory) / "identity"
@@ -167,7 +169,8 @@ def check_cli(RNS, binary, provider, checks="all"):
             address = RNS.Destination.hash(identity, "lxmf", "delivery")
             require(address.hex().startswith("a") and address.hex().endswith("b"), "CLI vanity pattern mismatch")
             with contextlib.redirect_stdout(io.StringIO()):
-                args = argparse.Namespace(no_metadata=False, identity_file=str(path), provider=provider, expect_rns_version=None, manual_only=False)
+                args = argparse.Namespace(no_metadata=False, identity_file=str(path), provider=provider,
+                                          expect_rns_version=None, manual_only=False)
                 require(verify.verify_identity(args) == 0, "CLI metadata/reference verification failed")
             if interop:
                 check_rnid_import(bootstrap, path, address.hex())
@@ -230,7 +233,8 @@ def main():
         fixture = build_fixture(RNS, LXMF) if args.checks in ("core", "all") else None
         if args.check and fixture is not None:
             expected = json.loads(args.check.read_text(encoding="utf-8"))
-            require(expected == fixture, "cryptographic fixture mismatch (reference version alone is not a mismatch)")
+            require(expected == fixture,
+                    "cryptographic fixture mismatch (reference version alone is not a mismatch)")
             print(f"All {len(fixture['vectors'])} deterministic vectors match {args.check}")
         elif args.write and fixture is not None:
             args.write.write_text(json.dumps(fixture, indent=2, sort_keys=True) + "\n", encoding="utf-8")

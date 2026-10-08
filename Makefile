@@ -95,6 +95,8 @@ help:
 	@echo "  clean      - Remove known build artifacts; preserve identities"
 	@echo "  test       - Run unit tests"
 	@echo "  check      - Run tests, race detector, and vet"
+	@echo "  lint       - Check formatting, all target vets, and module hygiene"
+	@echo "  gate       - Run lint, tests, race, fuzz, builds, FIPS, and reference compatibility"
 	@echo "  fuzz       - Run the native address-matcher fuzz target"
 	@echo "  smoke      - Run quick functionality tests"
 	@echo "  bench      - Run targeted benchmarks"

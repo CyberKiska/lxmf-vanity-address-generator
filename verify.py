@@ -66,7 +66,8 @@ def load_reticulum(provider="auto"):
         # hide PyCA from that discovery, without changing any reference crypto.
         from unittest.mock import patch
         find_spec = importlib.util.find_spec
-        with patch("importlib.util.find_spec", side_effect=lambda name, *a, **kw: None if name == "cryptography" else find_spec(name, *a, **kw)):
+        with patch("importlib.util.find_spec", side_effect=lambda name, *a, **kw:
+                   None if name == "cryptography" else find_spec(name, *a, **kw)):
             import RNS
     else:
         import RNS
@@ -110,7 +111,8 @@ def verify_with_reticulum(raw_private, provider="auto"):
 
 def parse_metadata(content):
     fields = {}
-    labels = {"Address (LXMF)", "Identity Hash", "Full Specifier", "X25519 Public", "Ed25519 Public", "Combined", BASE64_LABEL, BASE32_LABEL}
+    labels = {"Address (LXMF)", "Identity Hash", "Full Specifier", "X25519 Public",
+              "Ed25519 Public", "Combined", BASE64_LABEL, BASE32_LABEL}
     lines = [line.strip() for line in content.splitlines()]
     for i, line in enumerate(lines):
         label, separator, value = line.partition(":")
@@ -188,9 +190,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("identity_file")
     parser.add_argument("--no-metadata", action="store_true", help="explicitly skip sidecar checks")
-    parser.add_argument("--manual-only", action="store_true", help="omit Reticulum checks; no reference compatibility claim")
+    parser.add_argument("--manual-only", action="store_true",
+                        help="omit Reticulum checks; no reference compatibility claim")
     parser.add_argument("--expect-rns-version", help="optionally require an exact reference version for CI")
-    parser.add_argument("--provider", choices=("auto", "pyca", "internal"), default="auto", help="reference provider to exercise")
+    parser.add_argument("--provider", choices=("auto", "pyca", "internal"), default="auto",
+                        help="reference provider to exercise")
     args = parser.parse_args()
     if args.manual_only and (args.expect_rns_version or args.provider != "auto"):
         parser.error("reference version/provider options cannot be used with --manual-only")
