@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestJSONPublicResultModes(t *testing.T) {
@@ -53,6 +56,65 @@ func TestJSONPublicResultModes(t *testing.T) {
 		if mode == "saved" && (result.Address != goldenLXMFAddress || result.IdentityHash != goldenIdentityHash || result.PublicKey != goldenX25519Public+goldenEd25519Public) {
 			t.Fatal("JSON public fields differ from sidecar contract")
 		}
+	}
+}
+
+type recoveryDiscardWriter struct {
+	input chan os.Signal
+	once  sync.Once
+}
+
+func (w *recoveryDiscardWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("Save recovery:")) {
+		w.once.Do(func() {
+			w.input <- os.Interrupt
+			w.input <- os.Interrupt
+		})
+	}
+	return len(p), nil
+}
+
+func TestJSONExplicitDiscardReportsUnverifiedFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "saved")
+	cfg, err := parseArgs([]string{"--json", "--prefix", goldenLXMFAddress, "--workers", "1", "--out", path, "--save-retry-timeout", "5s"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.allowWeakOutput = true // Includes Windows' explicit ACL acknowledgement.
+	input := make(chan os.Signal, 2)
+	stderr := &recoveryDiscardWriter{input: input}
+	var faults *faultDir
+	raw := goldenRandomInput(t)
+	var stdout bytes.Buffer
+	code := runWithDependencies(context.Background(), cfg, &stdout, stderr, runDependencies{
+		signals: input,
+		openTarget: func(name string) (*outputTarget, error) {
+			out, err := openOutputTarget(name)
+			if err == nil {
+				faults = &faultDir{dirOps: out.root}
+				out.root = faults
+			}
+			return out, err
+		},
+		rng: readerFunc(func(p []byte) (int, error) {
+			// Preflight has completed. Retain a full file whose sync fails.
+			faults.rules = []faultRule{{op: "sync", err: errors.New("injected sync failure")}}
+			return copy(p, raw), nil
+		}),
+		consoleTimeout: time.Second,
+	})
+	var result publicResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if code != 130 || result.Status != "cancelled" || len(result.VerifiedFiles) != 0 || len(result.UnverifiedFiles) != 1 {
+		t.Fatalf("discard outcome: code=%d result=%+v", code, result)
+	}
+	if !strings.Contains(result.Error, "explicitly abandoned") || len(result.Deviations) == 0 {
+		t.Fatal("discard cause or retained-file warnings omitted")
+	}
+	if info, err := os.Stat(result.UnverifiedFiles[0]); err != nil || info.Size() != 64 {
+		t.Fatal("unverified file was lost or not reported")
 	}
 }
 func TestJSONInspectionAndVersion(t *testing.T) {

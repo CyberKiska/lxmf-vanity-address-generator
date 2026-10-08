@@ -241,13 +241,12 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 				}
 			}
 		})
-		if abandoned {
-			exitCode = 130
-		}
-		if !result.saved() && !abandoned {
-			exitCode = 1
-		} else if len(result.Deviations) > 0 || len(result.Unverified) > 0 {
+		if result.saved() && (len(result.Deviations) > 0 || len(result.Unverified) > 0) {
 			exitCode = 3
+		} else if abandoned {
+			exitCode = 130
+		} else if !result.saved() {
+			exitCode = 1
 		}
 	}
 	if search.workerWarning != nil && err == nil {
