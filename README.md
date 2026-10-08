@@ -30,7 +30,7 @@ unattested test builds. Read [SECURITY.md](SECURITY.md) before creating an ident
 
 Build and use from source:
 
-Go 1.27.1 is the tested release toolchain (`go.mod` retains its 1.26.8 language requirement).
+Go 1.27.2 is the release toolchain (`go.mod` retains its 1.26.8 language requirement).
 
 Install from source with `go install github.com/CyberKiska/lxmf-vanity-address-generator@latest`.
 The resulting command is named `lxmf-vanity-address-generator`; local Makefile
@@ -59,6 +59,7 @@ positional arguments are rejected before any output files are created.
 | `--postfix <hex>` | Desired address suffix |
 | `--generator segmented\|independent` | Default segmented; independent redraws both halves for every candidate |
 | `--workers <int>` | Parallel workers, 1–256; defaults to `GOMAXPROCS` |
+| `--json` | One public result object for generation, inspection, benchmark, version and failures |
 | `--version` | Print build version, Go version and target |
 | `--inspect <file>` | Print public metadata only; no search or writes |
 | `--out <path>` | Private identity file; defaults to `identity` |
@@ -74,7 +75,11 @@ positional arguments are rejected before any output files are created.
 
 At least one pattern is required outside benchmark mode. Search time is random:
 `16^(prefix length + postfix length)` is the expected attempt count, not a
-deadline. Use short patterns initially. `--dry-run` cannot produce a usable
+deadline. Progress shows the fraction of equivalent searches estimated to have
+succeeded by that attempt count, and median/95% additional waiting times at the
+measured rate. These are statistical estimates, not completion percentages or
+deadlines. Failed attempts do not reduce the remaining-time distribution.
+Use short patterns initially. `--dry-run` cannot produce a usable
 identity because the private bytes are discarded; use `--benchmark` to measure
 performance.
 
@@ -165,6 +170,12 @@ seconds abandon the in-memory winner; any retained files remain reported.
 SIGTERM/SIGHUP do not confirm discard. Handled cancellation preserves an
 in-flight completed match. SIGQUIT, SIGKILL, runtime-fatal entropy failures and
 machine loss are outside this recovery guarantee.
+
+`--json` produces one public object with status, public keys/address when
+available, verified/unverified paths, deviations, attempts, elapsed seconds,
+generator and version. Statuses are `saved`, `partial`, `cancelled`, `limited`,
+`failed`, `dry-run`, `benchmark`, `inspected` and `version`. No private exports
+ever appear on stdout, including when saving a private sidecar.
 
 Stdout contains the public result; banner, progress and notices use a bounded
 stderr queue. Pipe progress uses plain lines once per minute. Saving never waits

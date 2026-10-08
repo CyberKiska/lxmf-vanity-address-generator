@@ -45,3 +45,6 @@ All notable user-visible changes are recorded here.
 - Six native artifact smoke jobs, cross-host reproducibility checking, isolated attestation and owner-tag release publication use the exact same artifact bytes.
 - CI selects the toolchain from `go.mod`, checks all target vets/module hygiene, and runs Python tests on Linux/macOS/Windows.
 - Added security reporting, installation, checksum and attestation guidance.
+
+- Public JSON results cover saved/deviating, cancelled, limited, failed, dry-run, benchmark, inspection and version modes, with checked output writes.
+- Release toolchain moved to Go 1.27.2 to address reachable Windows `os.Root` advisory GO-2026-6604 found by the pinned scanner.

@@ -61,7 +61,11 @@ func recoverWinner(attempt func() saveResult, interrupts <-chan os.Signal, timeo
 			select {
 			case <-timer.C:
 				break waiting
-			case sig := <-interrupts:
+			case sig, ok := <-interrupts:
+				if !ok {
+					interrupts = nil
+					continue
+				}
 				if sig != os.Interrupt {
 					continue
 				}

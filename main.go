@@ -36,9 +36,9 @@ type runDependencies struct {
 
 func run(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 	if cfg.showVersion {
-		text := versionText()
-		n, err := io.WriteString(stdout, text)
-		if err != nil || n != len(text) {
+		result := newPublicResult(cfg)
+		result.Status = "version"
+		if err := writeResult(stdout, cfg.json, &result, versionText()); err != nil {
 			return 1
 		}
 		return 0
@@ -62,7 +62,16 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 		closeTimeout = 2 * time.Second
 	}
 	defer c.close(closeTimeout)
-	fail := func(err error) int { c.status("Error: %v\n", err); return 1 }
+	public := newPublicResult(cfg)
+	fail := func(err error) int {
+		c.status("Error: %v\n", err)
+		if cfg.json {
+			public.Error = err.Error()
+			c.close(closeTimeout)
+			_ = writeResult(stdout, true, &public, "")
+		}
+		return 1
+	}
 	if err := selfTest(knownAnswerIdentity()); err != nil {
 		return fail(err)
 	}
@@ -73,16 +82,18 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 			wipeIdentitySecrets(&identity)
 			return fail(err)
 		}
-		var public bytes.Buffer
-		writePublicIdentityInfo(&public, &identity, cfg.inspectPath)
-		fmt.Fprintln(&public, "This metadata file contains public information only.")
+		var metadata bytes.Buffer
+		writePublicIdentityInfo(&metadata, &identity, cfg.inspectPath)
+		fmt.Fprintln(&metadata, "This metadata file contains public information only.")
+		public.Status = "inspected"
+		public.identity(&identity)
 		wipeIdentitySecrets(&identity)
 		if unmasked {
 			c.status("Warning: unmasked X25519 input; imported bytes were preserved and no file was written.\n")
 		}
 		c.close(closeTimeout)
-		n, err := stdout.Write(public.Bytes())
-		if err != nil || n != public.Len() {
+		err = writeResult(stdout, cfg.json, &public, metadata.String())
+		if err != nil {
 			return 1
 		}
 		return 0
@@ -170,7 +181,7 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 	progressDone := make(chan struct{})
 	go func() {
 		defer close(progressDone)
-		monitorProgress(progressCtx, &search.attempts, c, isCharacterDevice(stderr))
+		monitorProgress(progressCtx, &search.attempts, c, isCharacterDevice(stderr), len(cfg.prefix)+len(cfg.postfix))
 	}()
 	runCtx := searchCtx
 	stopTimer := func() {}
@@ -195,6 +206,11 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 		round := func() saveResult {
 			primary := output.saveIdentity(&identity, matcher, cfg.includePrivateExports)
 			if primary.saved() || primary.internal || fallback == nil {
+				if fallback != nil {
+					remaining := fallback.retainedResult(&identity)
+					primary.Verified = append(primary.Verified, remaining.Verified...)
+					primary.Unverified = append(primary.Unverified, remaining.Unverified...)
+				}
 				return primary
 			}
 			other := fallback.saveIdentity(&identity, matcher, cfg.includePrivateExports)
@@ -206,7 +222,16 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 			return other
 		}
 		var abandoned bool
-		result, abandoned = recoverWinner(round, signals.recovery, cfg.saveRetryTimeout, c, func() { signals.phase("recovery") })
+		result, abandoned = recoverWinner(round, signals.recovery, cfg.saveRetryTimeout, c, func() {
+			signals.phase("recovery")
+			if cfg.saveRetryTimeout > 0 {
+				deadline := time.Now().Add(cfg.saveRetryTimeout)
+				output.recoveryDeadline = deadline
+				if fallback != nil {
+					fallback.recoveryDeadline = deadline
+				}
+			}
+		})
 		if abandoned {
 			exitCode = 130
 		}
@@ -249,10 +274,40 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 			text += fmt.Sprintf("  Identity not verified saved: %v\n", result.cause)
 		}
 	}
+	public.Attempts = search.attempts.Load()
+	public.ElapsedSeconds = elapsed.Seconds()
+	public.VerifiedFiles = append(public.VerifiedFiles, result.Verified...)
+	public.UnverifiedFiles = append(public.UnverifiedFiles, result.Unverified...)
+	public.Deviations = append(public.Deviations, result.Deviations...)
+	switch {
+	case cfg.benchmarkDuration > 0 && errors.Is(err, context.DeadlineExceeded):
+		public.Status = "benchmark"
+	case err == nil && cfg.dryRun:
+		public.Status = "dry-run"
+		public.identity(&identity)
+	case result.saved():
+		public.Status = "saved"
+		public.identity(&identity)
+		if exitCode == 3 {
+			public.Status = "partial"
+		}
+	case exitCode == 130:
+		public.Status = "cancelled"
+	case exitCode == 4:
+		public.Status = "limited"
+	default:
+		public.Status = "failed"
+	}
+	if err != nil && public.Status != "benchmark" {
+		public.Error = err.Error()
+	}
+	if result.cause != nil && !result.saved() {
+		public.Error = result.cause.Error()
+	}
 	wipeIdentitySecrets(&identity)
 	c.close(closeTimeout)
-	n, writeErr := io.WriteString(stdout, text)
-	if writeErr != nil || n != len(text) {
+	writeErr := writeResult(stdout, cfg.json, &public, text)
+	if writeErr != nil {
 		if result.saved() {
 			return 3
 		}

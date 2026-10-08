@@ -32,7 +32,11 @@ func newSignalOwner(input <-chan os.Signal, cancel context.CancelFunc) *signalOw
 			case req := <-owner.phases:
 				for {
 					select {
-					case <-input:
+					case _, ok := <-input:
+						if !ok {
+							input = nil
+							goto drained
+						}
 					default:
 						goto drained
 					}
@@ -48,7 +52,11 @@ func newSignalOwner(input <-chan os.Signal, cancel context.CancelFunc) *signalOw
 				}
 			emptied:
 				close(req.ack)
-			case sig := <-input:
+			case sig, ok := <-input:
+				if !ok {
+					input = nil
+					continue
+				}
 				if phase == "search" {
 					cancel()
 				}

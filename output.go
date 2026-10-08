@@ -9,17 +9,19 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // All mutations and reads remain anchored to the originally opened directory.
 type outputTarget struct {
-	root       dirOps
-	path, name string
-	exclusive  bool
-	allowWeak  bool
-	notices    []string
-	retained   []*ownedFile
-	deviations []string
+	root             dirOps
+	path, name       string
+	exclusive        bool
+	allowWeak        bool
+	notices          []string
+	retained         []*ownedFile
+	deviations       []string
+	recoveryDeadline time.Time
 }
 
 type ownedFile struct {
@@ -71,7 +73,16 @@ func openOutputTarget(path string) (*outputTarget, error) {
 	}
 	return &outputTarget{root: rootDir{root}, path: absolute, name: name}, nil
 }
+func (o *outputTarget) operationAllowed() error {
+	if !o.recoveryDeadline.IsZero() && !time.Now().Before(o.recoveryDeadline) {
+		return fmt.Errorf("save recovery deadline reached between file operations")
+	}
+	return nil
+}
 func (o *outputTarget) createTemp(base string) (fileOps, string, error) {
+	if err := o.operationAllowed(); err != nil {
+		return nil, "", err
+	}
 	for range 10 {
 		name := base + ".tmp-" + rand.Text()
 		f, err := o.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
@@ -134,6 +145,9 @@ func (o *outputTarget) writeOpened(f fileOps, name string, data []byte) (*ownedF
 	if err := errors.Join(statErr, chmodErr, protectionErr); err != nil {
 		return record, errors.Join(err, f.Close())
 	}
+	if err := o.operationAllowed(); err != nil {
+		return record, errors.Join(err, f.Close())
+	}
 	n, writeErr := f.Write(data)
 	record.complete = n == len(data)
 	if !record.complete && writeErr == nil {
@@ -141,12 +155,19 @@ func (o *outputTarget) writeOpened(f fileOps, name string, data []byte) (*ownedF
 	}
 	var syncErr error
 	if record.complete {
-		syncErr = f.Sync()
+		if err := o.operationAllowed(); err != nil {
+			syncErr = err
+		} else {
+			syncErr = f.Sync()
+		}
 	}
 	closeErr := f.Close()
 	return record, errors.Join(writeErr, syncErr, closeErr)
 }
 func (o *outputTarget) verifyOwned(record *ownedFile, data []byte, syncFile bool) (err error) {
+	if err := o.operationAllowed(); err != nil {
+		return err
+	}
 	entry, err := o.root.Lstat(record.name)
 	if err != nil {
 		return err
@@ -157,6 +178,9 @@ func (o *outputTarget) verifyOwned(record *ownedFile, data []byte, syncFile bool
 	flags := safeReadFlags
 	if syncFile {
 		flags |= os.O_RDWR
+	}
+	if err := o.operationAllowed(); err != nil {
+		return err
 	}
 	f, err := o.root.OpenFile(record.name, flags, 0)
 	if err != nil {
@@ -175,11 +199,17 @@ func (o *outputTarget) verifyOwned(record *ownedFile, data []byte, syncFile bool
 	}
 	buf := make([]byte, len(data)+1)
 	defer wipeBytes(buf)
+	if err := o.operationAllowed(); err != nil {
+		return err
+	}
 	n, readErr := io.ReadFull(f, buf)
 	if n != len(data) || (readErr != io.EOF && readErr != io.ErrUnexpectedEOF) || !bytes.Equal(buf[:n], data) {
 		return fmt.Errorf("verification: read-back differs at %s: %w", o.fullPath(record.name), errors.Join(readErr, io.ErrUnexpectedEOF))
 	}
 	if syncFile {
+		if err := o.operationAllowed(); err != nil {
+			return err
+		}
 		if err := f.Sync(); err != nil {
 			return fmt.Errorf("sync %s: %w", o.fullPath(record.name), err)
 		}
@@ -335,6 +365,9 @@ func (o *outputTarget) persist(name string, data []byte, state *[]*ownedFile) (s
 		}
 		candidate = record
 	}
+	if err := o.operationAllowed(); err != nil {
+		return "", err
+	}
 	// A retry may have already published the requested entry before an error.
 	if candidate.name == name {
 		return name, nil
@@ -425,6 +458,17 @@ func (o *outputTarget) saveIdentity(identity *Identity, matcher addressMatcher, 
 			o.note(fmt.Errorf("recovery identity has no sidecar; inspect the verified recovery file"))
 		}
 	}
+	o.collectRetained(data[:], saved, &result)
+
+	if locationErr := o.checkLocation(); locationErr != nil {
+		result.LocationChanged = true
+		o.note(locationErr)
+	}
+	result.Deviations = append([]string(nil), o.deviations...)
+	return result
+}
+
+func (o *outputTarget) collectRetained(data []byte, saved string, result *saveResult) {
 	for _, f := range o.retained {
 		if f.name == saved {
 			continue
@@ -442,11 +486,14 @@ func (o *outputTarget) saveIdentity(identity *Identity, matcher addressMatcher, 
 			result.Unverified = appendUnique(result.Unverified, o.fullPath(f.name))
 		}
 	}
-	if locationErr := o.checkLocation(); locationErr != nil {
-		result.LocationChanged = true
-		o.note(locationErr)
-	}
-	result.Deviations = append([]string(nil), o.deviations...)
+}
+func (o *outputTarget) retainedResult(identity *Identity) saveResult {
+	var data [64]byte
+	defer wipeBytes(data[:])
+	copy(data[:32], identity.X25519Private[:])
+	copy(data[32:], identity.Ed25519Seed[:])
+	result := saveResult{}
+	o.collectRetained(data[:], "", &result)
 	return result
 }
 

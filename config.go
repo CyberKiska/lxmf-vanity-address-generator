@@ -22,6 +22,7 @@ type config struct {
 	generator             string
 	inspectPath           string
 	showVersion           bool
+	json                  bool
 	explicit              map[string]bool
 	dryRun                bool
 	includePrivateExports bool
@@ -50,6 +51,7 @@ func parseArgs(args []string, usage io.Writer) (config, error) {
 	flags.StringVar(&cfg.inspectPath, "inspect", "", "Print public metadata for a 64-byte identity; write nothing")
 	flags.BoolVar(&cfg.showVersion, "version", false, "Print version, Go version and target without searching")
 	flags.BoolVar(&cfg.allowWeakOutput, "allow-weak-output-protection", false, "Explicitly accept failed/unavailable output protection checks")
+	flags.BoolVar(&cfg.json, "json", false, "Write one public JSON result to stdout")
 	if err := flags.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -178,7 +180,10 @@ func isHex(s string) bool {
 func targetsOverlap(a, b *outputTarget) bool {
 	ai, e1 := a.root.Stat(".")
 	bi, e2 := b.root.Stat(".")
-	if e1 != nil || e2 != nil || !os.SameFile(ai, bi) {
+	if e1 != nil || e2 != nil {
+		return true
+	}
+	if !os.SameFile(ai, bi) {
 		return false
 	}
 	for _, left := range []string{a.name, a.name + ".txt"} {

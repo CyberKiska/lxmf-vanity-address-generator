@@ -7,6 +7,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestPreflightExercisesPublicationOperations(t *testing.T) {
@@ -88,5 +89,17 @@ func TestOutputPathSeparators(t *testing.T) {
 		}
 	} else {
 		testOutput(t, path)
+	}
+}
+
+func TestRecoveryDeadlinePreventsFurtherFileOperations(t *testing.T) {
+	out := testOutput(t, filepath.Join(t.TempDir(), "saved"))
+	out.recoveryDeadline = time.Now().Add(-time.Second)
+	fault := &faultDir{dirOps: out.root}
+	out.root = fault
+	identity := goldenIdentity(t)
+	result := out.saveIdentity(&identity, addressMatcher{}, false)
+	if result.saved() || fault.calls["open"] != 0 {
+		t.Fatal("deadline permitted a secret file open")
 	}
 }
