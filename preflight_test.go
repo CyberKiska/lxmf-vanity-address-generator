@@ -103,3 +103,15 @@ func TestRecoveryDeadlinePreventsFurtherFileOperations(t *testing.T) {
 		t.Fatal("deadline permitted a secret file open")
 	}
 }
+
+func TestPreflightCleansLinkThatReportedErrorAfterPublication(t *testing.T) {
+	out := testOutput(t, filepath.Join(t.TempDir(), "saved"))
+	out.root = &faultDir{dirOps: out.root, rules: []faultRule{{op: "link", nth: 1, after: true, err: syscall.EIO}}}
+	if err := out.preflight(); err == nil {
+		t.Fatal("post-effect link error accepted")
+	}
+	entries, _ := os.ReadDir(filepath.Dir(out.path))
+	if len(entries) != 0 {
+		t.Fatal("post-effect probe publication left an unreported file")
+	}
+}

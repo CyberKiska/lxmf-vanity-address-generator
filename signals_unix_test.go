@@ -91,3 +91,39 @@ func TestClosedPipesSaveBeforeReportingDeliveryFailure(t *testing.T) {
 		t.Fatal("closed pipes lost winner")
 	}
 }
+
+func TestRunReportsVerifiedIdentityInMovedDirectory(t *testing.T) {
+	parent := t.TempDir()
+	directory := filepath.Join(parent, "opened")
+	moved := filepath.Join(parent, "moved")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseArgs([]string{"--prefix", goldenLXMFAddress, "--workers", "1", "--out", filepath.Join(directory, "saved"), "--json"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	raw := goldenRandomInput(t)
+	code := runWithDependencies(context.Background(), cfg, &stdout, io.Discard, runDependencies{signals: make(chan os.Signal), rng: readerFunc(func(p []byte) (int, error) {
+		if err := os.Rename(directory, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+		return copy(p, raw), nil
+	})})
+	if code != 3 || !strings.Contains(stdout.String(), goldenLXMFAddress) || !strings.Contains(stdout.String(), "originally opened directory") {
+		t.Fatalf("moved save status %d: %s", code, stdout.String())
+	}
+	data, err := os.ReadFile(filepath.Join(moved, "saved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertHexEqual(t, "moved identity", data, goldenX25519Private+goldenEd25519Seed)
+	entries, _ := os.ReadDir(directory)
+	if len(entries) != 0 {
+		t.Fatal("replacement received identity bytes")
+	}
+}

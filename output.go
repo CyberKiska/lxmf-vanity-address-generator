@@ -293,7 +293,10 @@ func (o *outputTarget) preflight() (err error) {
 			break
 		}
 		if !linkUnsupported(linkErr) {
-			return fmt.Errorf("preflight link: %w", linkErr)
+			if entry, err := o.root.Lstat(probeName); err == nil && os.SameFile(entry, a.info) {
+				probes = append(probes, &ownedFile{name: probeName, info: a.info, complete: true})
+			}
+			return fmt.Errorf("preflight link %s: %w", o.fullPath(probeName), linkErr)
 		}
 		o.exclusive = true
 		file, err := o.root.OpenFile(probeName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)

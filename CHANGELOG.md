@@ -48,3 +48,5 @@ All notable user-visible changes are recorded here.
 
 - Public JSON results cover saved/deviating, cancelled, limited, failed, dry-run, benchmark, inspection and version modes, with checked output writes.
 - Release toolchain moved to Go 1.27.2 to address reachable Windows `os.Root` advisory GO-2026-6604 found by the pinned scanner.
+
+- Best-effort Unix core-dump suppression and Linux dumpability reduction occur before handling private input.

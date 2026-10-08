@@ -12,6 +12,7 @@ lxmf-vanity-darwin-*
 # Test files
 identity
 identity.*
+!identity.go
 test_identity*
 
 # Go build artifacts

@@ -23,6 +23,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(2)
 	}
+	if !cfg.showVersion {
+		if err := hardenProcess(); err != nil {
+			fmt.Fprintf(os.Stderr, "Notice: best-effort process hardening unavailable: %v\n", err)
+		}
+	}
 	os.Exit(run(context.Background(), cfg, os.Stdout, os.Stderr))
 }
 
@@ -32,6 +37,7 @@ type runDependencies struct {
 	openTarget     func(string) (*outputTarget, error)
 	signals        <-chan os.Signal
 	consoleTimeout time.Duration
+	console        *console
 }
 
 func run(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
@@ -56,7 +62,10 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 	}
 	signals := newSignalOwner(input, cancelSearch)
 	defer signals.close()
-	c := newConsole(stderr)
+	c := deps.console
+	if c == nil {
+		c = newConsole(stderr)
+	}
 	closeTimeout := deps.consoleTimeout
 	if closeTimeout == 0 {
 		closeTimeout = 2 * time.Second

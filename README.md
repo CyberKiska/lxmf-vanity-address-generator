@@ -195,6 +195,8 @@ copies are the same identity. Segment count does not bound wall-clock exposure,
 and cloned process/VM snapshots can duplicate state. Independent mode avoids
 deliberate reuse but does not make snapshots safe.
 
+The CLI attempts to disable Unix core dumps and Linux dumpability before secrets.
+This is best effort, and does not make tracebacks or same-user access safe.
 Owned private buffers are cleared on handled returns, with no complete erasure
 guarantee for compiler/runtime copies, opaque provider objects, swap or crashes.
 RNS requires X25519, which is unavailable in Go's FIPS-only mode; startup returns

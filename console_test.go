@@ -45,7 +45,8 @@ func TestRunSavesAndReturnsWithBlockedStderr(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "saved")
 	w := &blockedWriter{entered: make(chan struct{}), release: make(chan struct{})}
-	defer close(w.release)
+	c := newConsole(w)
+	defer func() { close(w.release); <-c.done }()
 	raw := goldenRandomInput(t)
 	cfg, err := parseArgs([]string{"--prefix", goldenLXMFAddress, "--workers", "1", "--out", path, "--allow-inherited-windows-acl"}, io.Discard)
 	// Windows acknowledgement is platform-specific; construct the config directly.
@@ -60,6 +61,7 @@ func TestRunSavesAndReturnsWithBlockedStderr(t *testing.T) {
 	code := runWithDependencies(context.Background(), cfg, &stdout, w, runDependencies{
 		rng:            readerFunc(func(p []byte) (int, error) { <-w.entered; return copy(p, raw), nil }),
 		consoleTimeout: time.Millisecond,
+		console:        c,
 		signals:        make(chan os.Signal),
 	})
 	if code != 0 && code != 3 {
