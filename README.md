@@ -228,7 +228,9 @@ python3 -m venv .venv
 
 On Windows the environment's executables are in `.venv\Scripts`.
 `verify.py` requires exactly 64 private bytes, bounds metadata reads, checks
-recognized metadata fields, rejects legacy unlabelled private exports, and rejects conflicting/duplicate fields. Missing sidecars and `--no-metadata` explicitly report skipped checks. It
+recognized metadata fields, rejects legacy unlabelled private exports, and rejects
+conflicting/duplicate fields. Missing sidecars and `--no-metadata` explicitly
+report skipped checks. It
 reports the actual RNS version, provider and import path. Missing RNS or a
 behavioral mismatch causes a nonzero exit.
 
@@ -244,6 +246,8 @@ behavioral mismatch causes a nonzero exit.
 ```bash
 make test          # Go and Python tests
 make check         # tests, race detector, vet
+make lint          # format, six target vets, module hygiene
+make gate PYTHON=.venv/bin/python # full local gate; install rns/lxmf first
 make fuzz          # bounded matcher fuzzing
 make compatibility PYTHON=.venv/bin/python
 make oracle PYTHON=.venv/bin/python RNS_FLAGS='--expect-rns-version 1.5.2 --provider internal'
@@ -260,14 +264,16 @@ CI uses the single release Go toolchain for tests and builds; it does not
 multiply jobs by historical Go or RNS versions. The two RNS providers run
 sequentially in one compatibility job.
 
-The release workflow gates six cgo-free PIE artifacts on platform tests,
+The configured release workflow gates six cgo-free PIE artifacts on platform tests,
 reference tests, race/fuzz/FIPS checks and `govulncheck`. Artifacts include SHA-256
-checksums and build information. Downloaded artifacts are executed on all six matching native runners before
+checksums and build information. The workflow executes downloaded artifacts on
+all six matching native runners before
 attestation/release, and linux/amd64 is rebuilt on macOS for byte comparison.
 The build job holds read permission only; isolated attestation and publication
 jobs execute no project scripts or downloaded binaries. Successful trusted
 `main` and validated release-tag builds receive
-GitHub build-provenance attestations. Verify a downloaded binary with:
+GitHub build-provenance attestations after those gates pass. These workflow
+changes still need their first hosted validation run. Verify a downloaded binary with:
 
 ```bash
 gh attestation verify ./lxmf-vanity-linux-amd64 --repo CyberKiska/lxmf-vanity-address-generator
