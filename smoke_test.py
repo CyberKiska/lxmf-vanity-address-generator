@@ -5,14 +5,14 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
-from scripts.smoke_artifact import DIRECTORY_SYNC_LIMIT, check_generation
+from scripts.smoke_artifact import DIRECTORY_SYNC_LIMIT, WINDOWS_PROTECTION_NOTICES, check_generation
 
 
 class ArtifactSmokeTests(unittest.TestCase):
-    def test_only_windows_directory_notice_is_accepted(self):
+    def test_only_known_windows_notices_are_accepted(self):
         path = Path("disposable")
         saved = {"status": "saved", "verified_files": [str(path)], "unverified_files": [],
-                 "deviations": [], "notices": [DIRECTORY_SYNC_LIMIT]}
+                 "deviations": [], "notices": [DIRECTORY_SYNC_LIMIT, *sorted(WINDOWS_PROTECTION_NOTICES)]}
         check_generation(SimpleNamespace(returncode=0, stdout=json.dumps(saved)), "windows", path)
         with self.assertRaises(ValueError):
             check_generation(SimpleNamespace(returncode=0, stdout=json.dumps(saved)), "linux", path)

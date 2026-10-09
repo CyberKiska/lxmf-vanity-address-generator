@@ -12,6 +12,10 @@ import tempfile
 
 
 DIRECTORY_SYNC_LIMIT = "directory sync unsupported on this filesystem; power-loss durability is not verified"
+WINDOWS_PROTECTION_NOTICES = {
+    "Weak output protection explicitly accepted: access-control verification is unavailable; inherited Windows ACLs must already be restricted",
+    "Weak output protection explicitly accepted: private-file ACL verification is unavailable",
+}
 
 
 def check_generation(result, target_os, path):
@@ -22,8 +26,8 @@ def check_generation(result, target_os, path):
         raise ValueError("artifact generation reported deviations")
     if saved["verified_files"] != [str(path)]:
         raise ValueError("artifact did not verify the requested identity file")
-    # Go cannot flush a directory on Windows; that is a platform notice only.
-    allowed = {DIRECTORY_SYNC_LIMIT} if target_os == "windows" else set()
+    # Windows smoke explicitly accepts inherited ACLs and cannot flush directories.
+    allowed = {DIRECTORY_SYNC_LIMIT} | WINDOWS_PROTECTION_NOTICES if target_os == "windows" else set()
     if not set(saved["notices"]) <= allowed:
         raise ValueError("artifact generation reported unexpected notices")
 

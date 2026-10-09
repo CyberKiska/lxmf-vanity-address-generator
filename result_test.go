@@ -138,3 +138,43 @@ func TestJSONInspectionAndVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestJSONIncludesPreflightAndSaveProtectionNotices(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "saved")
+	cfg, err := parseArgs([]string{"--json", "--prefix", goldenLXMFAddress, "--workers", "1", "--out", path, "--allow-weak-output-protection"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target *outputTarget
+	var stdout bytes.Buffer
+	raw := goldenRandomInput(t)
+	code := runWithDependencies(context.Background(), cfg, &stdout, io.Discard, runDependencies{
+		signals: make(chan os.Signal),
+		openTarget: func(name string) (*outputTarget, error) {
+			var err error
+			target, err = openOutputTarget(name)
+			if err == nil {
+				target.allowWeak = true
+				target.protection(errors.New("preflight protection unavailable"))
+			}
+			return target, err
+		},
+		rng: readerFunc(func(p []byte) (int, error) {
+			// This notice occurs after the preflight console output.
+			target.protection(errors.New("save protection unavailable"))
+			return copy(p, raw), nil
+		}),
+	})
+	var result publicResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 || result.Status != "saved" {
+		t.Fatalf("unexpected save result: code=%d result=%+v", code, result)
+	}
+	for _, reason := range []string{"preflight protection unavailable", "save protection unavailable"} {
+		if !strings.Contains(strings.Join(result.Notices, "\n"), reason) {
+			t.Fatalf("missing protection notice %q: %q", reason, result.Notices)
+		}
+	}
+}

@@ -255,6 +255,15 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 			exitCode = 3
 		}
 	}
+	// Preserve protection notices, including those discovered after preflight,
+	// in the final result even when the bounded progress queue drops a message.
+	for _, target := range []*outputTarget{output, fallback} {
+		if target != nil {
+			for _, notice := range target.notices {
+				result.Notices = appendUnique(result.Notices, notice)
+			}
+		}
+	}
 	// Construct only public output, then clear the winner before any final write.
 	var text string
 	if cfg.benchmarkDuration > 0 && errors.Is(err, context.DeadlineExceeded) {

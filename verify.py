@@ -232,7 +232,8 @@ def verify_identity(args):
     try:
         result = verify_with_reticulum(raw_private, args.provider)
     except Exception as exc:
-        print(f"Reticulum verification failed: {exc}", file=sys.stderr)
+        # Upstream exceptions can contain private input bytes or exports.
+        print(f"Reticulum verification failed: {type(exc).__name__}", file=sys.stderr)
         return 1
     if result is None:
         print("Reticulum is not installed; compatibility was NOT verified.", file=sys.stderr)

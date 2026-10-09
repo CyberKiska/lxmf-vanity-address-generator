@@ -38,6 +38,17 @@ class VerifyScriptTests(unittest.TestCase):
         self.assertEqual(self.run_main(None), 2)
         self.assertEqual(self.run_main(None, manual_only=True), 0)
 
+    def test_reference_exception_does_not_disclose_private_material(self):
+        args = argparse.Namespace(no_metadata=True, identity_file=self.identity_path,
+                                  manual_only=False, expect_rns_version=None, provider="auto")
+        output, errors = io.StringIO(), io.StringIO()
+        with mock.patch.object(verify, "compute_lxmf_address", return_value=self.manual_result), \
+                mock.patch.object(verify, "verify_with_reticulum", side_effect=ValueError(self.private.hex())), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            self.assertEqual(verify.verify_identity(args), 1)
+        self.assertNotIn(self.private.hex(), output.getvalue() + errors.getvalue())
+        self.assertIn("ValueError", errors.getvalue())
+
     def test_matching_behavior_accepts_different_versions(self):
         for version in ("1.4.2", "1.5.2", "future-test-version"):
             with self.subTest(version=version):
