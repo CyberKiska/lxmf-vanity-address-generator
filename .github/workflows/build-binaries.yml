@@ -165,7 +165,8 @@ jobs:
         env:
           TARGET: ${{ steps.build.outputs.binary }}
         run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" -mode=binary "$TARGET"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: upload
         with:
           name: lxmf-vanity-${{ matrix.goos }}-${{ matrix.goarch }}
           if-no-files-found: error
@@ -174,6 +175,12 @@ jobs:
             ${{ steps.build.outputs.binary }}.sha256
             ${{ steps.build.outputs.binary }}.build-info.txt
           retention-days: 60
+      - name: Show binary download in run summary
+        env:
+          BINARY_NAME: ${{ steps.build.outputs.binary }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          printf '### Download %s\n\n[Download binary bundle](%s)\n\nIncludes the executable, SHA-256 checksum and build information.\n' "$BINARY_NAME" "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
 
   smoke:
     needs: [policy, build]
