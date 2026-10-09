@@ -152,7 +152,8 @@ trusted; this does not protect against someone allowed to modify its contents.
 
 Publication syncs a temporary file and prefers an atomic, no-replace hard link.
 Filesystems without hard links use exclusive creation; that fallback is not
-crash-atomic. Directory sync is best effort, so portable power-loss durability
+crash-atomic. Directory sync is best effort (unavailable through Go on Windows,
+reported as a notice), so portable power-loss durability
 is not guaranteed. Keep backups.
 
 Every winner is re-derived and checked against the pattern before writing.
@@ -172,8 +173,9 @@ in-flight completed match. SIGQUIT, SIGKILL, runtime-fatal entropy failures and
 machine loss are outside this recovery guarantee.
 
 `--json` produces one public object with status, public keys/address when
-available, verified/unverified paths, deviations, attempts, elapsed seconds,
-generator and version. Statuses are `saved`, `partial`, `cancelled`, `limited`,
+available, verified/unverified paths, deviations, notices, attempts, elapsed
+seconds, generator and version. Notices are known platform limits that do not
+change the status, such as Windows directory flushing being unavailable. Statuses are `saved`, `partial`, `cancelled`, `limited`,
 `failed`, `dry-run`, `benchmark`, `inspected` and `version`. No private exports
 ever appear on stdout, including when saving a private sidecar.
 
@@ -184,7 +186,9 @@ Exit statuses: 0 success; 1 no verified saved identity/runtime failure; 2 usage
 error; 4 search limit without a match; 3 verified saved identity with deviations (including result delivery
 failure); 130 cancellation or explicitly abandoned memory. Deviations include
 recovery/fallback names, failed metadata, moved directories, retained files and
-durability warnings. Inspect reported paths before retrying a search.
+directory sync I/O errors. Inspect reported paths before retrying a search.
+If the output directory is deleted or unmounted during a search, retries stay
+anchored to it and cannot succeed unless `--fallback-out` was configured.
 
 The default segmented generator draws 64 bytes at segment start, then a fresh
 32-byte Ed25519 seed for each discarded candidate, replacing the X25519 half

@@ -32,11 +32,16 @@ All notable user-visible changes are recorded here.
 - Explicit recovery discard returns cancellation status 130 even when unverified files and warnings remain.
 - Directory-sync limitations preserve other errors; artifact smoke accepts only the explicitly reported Windows durability limitation.
 - Windows path validation rejects trailing separators in either syntax.
+- A complete save exits 0 on Windows: unavailable directory flushing is reported as a notice (new `notices` JSON field and `Note:` lines), not a deviation.
+- A sidecar collision no longer reports a deleted temporary as a verified recovery file.
+- Hard-link failures reported as `errors.ErrUnsupported` (including on Windows) use the exclusive-create fallback.
+- Recovery explains when the output directory is no longer at its path and retries cannot be redirected.
+- `--allow-inherited-windows-acl` outside Windows is a usage error (status 2).
 
 ### Security
 
 - Unsafe Unix directory ownership/write modes are refused. Private-file ownership/mode are checked before writing secrets and during read-back. An explicit portable override reports accepted weaknesses; Windows retains acknowledgement of unverified ACLs.
 - Secret aggregates use pointers and owned private buffers are cleared before final output, subject to Go/runtime and operating-system limits.
 - Best-effort Unix core-dump suppression and Linux dumpability reduction occur before handling private input.
-- Release toolchain moved to Go 1.27.2 after the pinned scanner found reachable Windows `os.Root` advisory GO-2026-6604.
+- Release toolchain moved to Go 1.27.2, and the minimum to Go 1.26.9, after the pinned scanner found reachable Windows `os.Root` advisory GO-2026-6604.
 - Reference dependencies are hash-pinned; upstream code runs with read-only permissions and without privileged-job executable reuse.
