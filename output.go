@@ -37,6 +37,7 @@ type saveResult struct {
 	Verified        []string
 	Unverified      []string
 	Deviations      []string
+	Notices         []string // known platform limits; not deviations
 	LocationChanged bool
 	internal        bool
 	cause           error
@@ -112,7 +113,10 @@ func (o *outputTarget) checkLocation() error {
 	return nil
 }
 func linkUnsupported(err error) bool {
-	return errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EXDEV)
+	// ErrUnsupported also covers Windows errors (ERROR_NOT_SUPPORTED and
+	// friends), which never equal syscall.ENOTSUP.
+	return errors.Is(err, errors.ErrUnsupported) || errors.Is(err, syscall.ENOTSUP) ||
+		errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EXDEV)
 }
 func (o *outputTarget) removeOwned(f *ownedFile) error {
 	current, err := o.root.Lstat(f.name)
@@ -217,11 +221,16 @@ func (o *outputTarget) verifyOwned(record *ownedFile, data []byte, syncFile bool
 	}
 	return nil
 }
+
+// errDirSyncUnsupported is a known platform/filesystem limit, reported as a
+// notice rather than a per-save deviation; real sync/close errors still are.
+var errDirSyncUnsupported = errors.New("directory sync unsupported on this filesystem; power-loss durability is not verified")
+
 func (o *outputTarget) syncDirectory() error {
 	if runtime.GOOS == "windows" {
 		// Go opens directories for reading only; FlushFileBuffers requires a
-		// writable handle. Report this platform limitation explicitly.
-		return fmt.Errorf("directory sync unsupported on this filesystem; power-loss durability is not verified")
+		// writable handle.
+		return errDirSyncUnsupported
 	}
 	f, err := o.root.OpenFile(".", os.O_RDONLY, 0)
 	if err != nil {
@@ -230,7 +239,10 @@ func (o *outputTarget) syncDirectory() error {
 	syncErr := f.Sync()
 	closeErr := f.Close()
 	if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
-		return errors.Join(fmt.Errorf("directory sync unsupported on this filesystem; power-loss durability is not verified"), closeErr)
+		if closeErr == nil {
+			return errDirSyncUnsupported
+		}
+		return errors.Join(errDirSyncUnsupported, closeErr)
 	}
 	if err := errors.Join(syncErr, closeErr); err != nil {
 		return fmt.Errorf("directory sync/close: %w", err)
@@ -413,8 +425,8 @@ func (o *outputTarget) persist(name string, data []byte, state *[]*ownedFile) (s
 	}
 	// Hard links alias the same inode. Verify the retained bytes again even if
 	// publication reported failure; rebuild once when the shared inode changed.
+	// Callers report a returned recovery name: the sidecar path deletes it.
 	if verifyErr := o.verifyOwned(candidate, data, true); verifyErr == nil {
-		o.note(fmt.Errorf("requested name unavailable; verified recovery file %s", o.fullPath(candidate.name)))
 		return candidate.name, nil
 	} else {
 		o.note(verifyErr)
@@ -430,7 +442,7 @@ func (o *outputTarget) persist(name string, data []byte, state *[]*ownedFile) (s
 			writeErr = o.verifyOwned(record, data, false)
 		}
 		if writeErr == nil {
-			o.note(fmt.Errorf("publication verification failed; rebuilt verified recovery file %s", o.fullPath(temp)))
+			o.note(fmt.Errorf("publication verification failed; rebuilt the copy from memory"))
 			return temp, nil
 		}
 		return "", writeErr
@@ -458,13 +470,17 @@ func (o *outputTarget) saveIdentity(identity *Identity, matcher addressMatcher, 
 	o.note(err)
 	if saved != "" {
 		result.Verified = append(result.Verified, o.fullPath(saved))
-		o.note(o.syncDirectory())
+		if err := o.syncDirectory(); err == errDirSyncUnsupported {
+			result.Notices = appendUnique(result.Notices, err.Error())
+		} else {
+			o.note(err)
+		}
 		if saved == o.name {
 			if err := o.writeIdentityInfo(identity, privateExports); err != nil {
 				o.note(fmt.Errorf("identity was saved; metadata could not be saved: %w", err))
 			}
 		} else {
-			o.note(fmt.Errorf("recovery identity has no sidecar; inspect the verified recovery file"))
+			o.note(fmt.Errorf("requested name unavailable; identity saved as verified recovery file %s without a sidecar; use --inspect on it", o.fullPath(saved)))
 		}
 	}
 	o.collectRetained(data[:], saved, &result)

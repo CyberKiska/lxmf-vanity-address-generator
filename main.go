@@ -278,6 +278,9 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 		for _, warning := range result.Deviations {
 			text += fmt.Sprintf("  Warning: %s\n", warning)
 		}
+		for _, note := range result.Notices {
+			text += fmt.Sprintf("  Note: %s\n", note)
+		}
 		if !cfg.dryRun && !result.saved() {
 			text += fmt.Sprintf("  Identity not verified saved: %v\n", result.cause)
 		}
@@ -287,6 +290,7 @@ func runWithDependencies(ctx context.Context, cfg config, stdout, stderr io.Writ
 	public.VerifiedFiles = append(public.VerifiedFiles, result.Verified...)
 	public.UnverifiedFiles = append(public.UnverifiedFiles, result.Unverified...)
 	public.Deviations = append(public.Deviations, result.Deviations...)
+	public.Notices = append(public.Notices, result.Notices...)
 	switch {
 	case cfg.benchmarkDuration > 0 && errors.Is(err, context.DeadlineExceeded):
 		public.Status = "benchmark"

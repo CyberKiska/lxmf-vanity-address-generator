@@ -48,15 +48,13 @@ func TestRunSavesAndReturnsWithBlockedStderr(t *testing.T) {
 	c := newConsole(w)
 	defer func() { close(w.release); <-c.done }()
 	raw := goldenRandomInput(t)
-	cfg, err := parseArgs([]string{"--prefix", goldenLXMFAddress, "--workers", "1", "--out", path, "--allow-inherited-windows-acl"}, io.Discard)
-	// Windows acknowledgement is platform-specific; construct the config directly.
+	cfg, err := parseArgs([]string{"--prefix", goldenLXMFAddress, "--workers", "1", "--out", path}, io.Discard)
 	if err != nil {
+		c.close(time.Millisecond) // let the deferred console join finish
 		t.Fatal(err)
 	}
-	cfg.allowInheritedWinACL = false
-	if os.PathSeparator == '\\' {
-		cfg.allowInheritedWinACL = true
-	}
+	// The Windows acknowledgement is a usage error elsewhere; set it directly.
+	cfg.allowInheritedWinACL = os.PathSeparator == '\\'
 	var stdout bytes.Buffer
 	code := runWithDependencies(context.Background(), cfg, &stdout, w, runDependencies{
 		rng:            readerFunc(func(p []byte) (int, error) { <-w.entered; return copy(p, raw), nil }),

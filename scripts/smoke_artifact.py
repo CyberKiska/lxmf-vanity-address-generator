@@ -11,19 +11,21 @@ import subprocess
 import tempfile
 
 
+DIRECTORY_SYNC_LIMIT = "directory sync unsupported on this filesystem; power-loss durability is not verified"
+
+
 def check_generation(result, target_os, path):
     saved = json.loads(result.stdout)
-    if result.returncode != 0:
-        # Directory flushing is unavailable through Go on Windows. Every other
-        # saved deviation still fails the artifact gate.
-        unsupported = "directory sync unsupported on this filesystem; power-loss durability is not verified"
-        if not (target_os == "windows" and result.returncode == 3
-                and saved["status"] == "partial"
-                and saved["deviations"] == [unsupported]
-                and not saved["unverified_files"]):
-            raise ValueError(f"artifact generation failed (status {result.returncode})")
+    if result.returncode != 0 or saved["status"] != "saved":
+        raise ValueError(f"artifact generation failed (status {result.returncode})")
+    if saved["deviations"] or saved["unverified_files"]:
+        raise ValueError("artifact generation reported deviations")
     if saved["verified_files"] != [str(path)]:
         raise ValueError("artifact did not verify the requested identity file")
+    # Go cannot flush a directory on Windows; that is a platform notice only.
+    allowed = {DIRECTORY_SYNC_LIMIT} if target_os == "windows" else set()
+    if not set(saved["notices"]) <= allowed:
+        raise ValueError("artifact generation reported unexpected notices")
 
 
 def main():

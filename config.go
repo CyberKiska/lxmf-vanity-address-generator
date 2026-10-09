@@ -88,6 +88,9 @@ func validateInputs(cfg config) error {
 		}
 		return nil
 	}
+	if cfg.allowInheritedWinACL && runtime.GOOS != "windows" {
+		return fmt.Errorf("--allow-inherited-windows-acl is only valid on Windows")
+	}
 	if cfg.generator != "" && cfg.generator != "segmented" && cfg.generator != "independent" {
 		return fmt.Errorf("generator must be segmented or independent")
 	}

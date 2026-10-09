@@ -30,7 +30,7 @@ unattested test builds. Read [SECURITY.md](SECURITY.md) before creating an ident
 
 Build and use from source:
 
-Go 1.27.2 is the release toolchain (`go.mod` retains its 1.26.8 language requirement).
+Go 1.27.2 is the release toolchain (`go.mod` requires at least 1.26.9, which contains the Windows `os.Root` fix GO-2026-6604).
 
 Install from source with `go install github.com/CyberKiska/lxmf-vanity-address-generator@latest`.
 The resulting command is named `lxmf-vanity-address-generator`; local Makefile

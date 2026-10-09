@@ -16,6 +16,7 @@ type publicResult struct {
 	VerifiedFiles   []string `json:"verified_files"`
 	UnverifiedFiles []string `json:"unverified_files"`
 	Deviations      []string `json:"deviations"`
+	Notices         []string `json:"notices"`
 	Attempts        uint64   `json:"attempts"`
 	ElapsedSeconds  float64  `json:"elapsed_seconds"`
 	Generator       string   `json:"generator"`
@@ -24,7 +25,7 @@ type publicResult struct {
 }
 
 func newPublicResult(cfg config) publicResult {
-	return publicResult{Status: "failed", VerifiedFiles: []string{}, UnverifiedFiles: []string{}, Deviations: []string{}, Generator: cfg.generator, Version: buildVersion()}
+	return publicResult{Status: "failed", VerifiedFiles: []string{}, UnverifiedFiles: []string{}, Deviations: []string{}, Notices: []string{}, Generator: cfg.generator, Version: buildVersion()}
 }
 func (r *publicResult) identity(identity *Identity) {
 	r.Address = hex.EncodeToString(identity.Address[:])

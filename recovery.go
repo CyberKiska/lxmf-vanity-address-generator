@@ -47,6 +47,11 @@ func recoverWinner(attempt func() saveResult, interrupts <-chan os.Signal, timeo
 			}
 			enter()
 		}
+		if result.LocationChanged {
+			// Anchored retries are never redirected; a deleted or unmounted
+			// directory can only recover if it comes back via the same handle.
+			c.status("Save recovery: the opened output directory is no longer at the requested path (moved, deleted or unmounted); retries stay anchored to it and are never redirected.\n")
+		}
 		c.status("Save recovery: %v; retry in %s. Two fresh Ctrl-C presses within 10s discard memory; retained files remain.\n", result.cause, delay)
 		wait := delay
 		if !deadline.IsZero() {
