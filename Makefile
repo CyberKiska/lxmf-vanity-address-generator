@@ -1,11 +1,12 @@
-.PHONY: build build-debug build-all clean test check fuzz smoke bench compatibility oracle regenerate-golden install deps help
+.PHONY: lint gate build build-debug build-all clean test check fuzz smoke bench compatibility oracle regenerate-golden install deps help
 
 BINARY ?= lxmf-vanity
 PYTHON ?= python3
 RNS_FLAGS ?=
 BUILDFLAGS ?= -trimpath -buildvcs=false
 BUILDMODE ?= -buildmode=pie
-LDFLAGS ?= -s -w -buildid=
+VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo dev)
+LDFLAGS ?= -s -w -buildid= -X main.version=$(VERSION)
 
 # Build the binary
 build:
@@ -15,14 +16,15 @@ build:
 build-debug:
 	go build -o "$(BINARY)-debug" .
 
-# Build for multiple platforms
+TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
+
+# One platform list drives builds and lint. Cleanup remains an explicit allow-list.
 build-all:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(BUILDMODE) $(BUILDFLAGS) -ldflags "$(LDFLAGS)" -o lxmf-vanity-linux-amd64 .
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(BUILDMODE) $(BUILDFLAGS) -ldflags "$(LDFLAGS)" -o lxmf-vanity-linux-arm64 .
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(BUILDMODE) $(BUILDFLAGS) -ldflags "$(LDFLAGS)" -o lxmf-vanity-darwin-amd64 .
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(BUILDMODE) $(BUILDFLAGS) -ldflags "$(LDFLAGS)" -o lxmf-vanity-darwin-arm64 .
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(BUILDMODE) $(BUILDFLAGS) -ldflags "$(LDFLAGS)" -o lxmf-vanity-windows-amd64.exe .
-	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(BUILDMODE) $(BUILDFLAGS) -ldflags "$(LDFLAGS)" -o lxmf-vanity-windows-arm64.exe .
+	@set -eu; for target in $(TARGETS); do \
+		suffix=""; if [ "$${target%/*}" = windows ]; then suffix=".exe"; fi; \
+		CGO_ENABLED=0 GOOS=$${target%/*} GOARCH=$${target#*/} go build $(BUILDMODE) $(BUILDFLAGS) \
+			-ldflags "$(LDFLAGS)" -o "lxmf-vanity-$${target%/*}-$${target#*/}$$suffix" .; \
+	done
 
 # Clean build artifacts
 clean:
@@ -93,6 +95,8 @@ help:
 	@echo "  clean      - Remove known build artifacts; preserve identities"
 	@echo "  test       - Run unit tests"
 	@echo "  check      - Run tests, race detector, and vet"
+	@echo "  lint       - Check formatting, all target vets, and module hygiene"
+	@echo "  gate       - Run lint, tests, race, fuzz, builds, FIPS, and reference compatibility"
 	@echo "  fuzz       - Run the native address-matcher fuzz target"
 	@echo "  smoke      - Run quick functionality tests"
 	@echo "  bench      - Run targeted benchmarks"
@@ -102,3 +106,21 @@ help:
 	@echo "  install    - Install to /usr/local/bin"
 	@echo "  deps       - Download and tidy dependencies"
 	@echo "  help       - Show this help message"
+
+# Complete implementation gate. Reference packages must be installed for PYTHON.
+lint:
+	@test -z "$$(gofmt -s -l .)"
+	go mod tidy -diff
+	@set -eu; for target in $(TARGETS); do \
+		CGO_ENABLED=0 GOOS=$${target%/*} GOARCH=$${target#*/} go vet ./...; \
+	done
+
+gate: lint test
+	go test -race -count=1 ./...
+	$(MAKE) fuzz
+	$(MAKE) build build-all
+	@set -eu; fips_log="$$(mktemp)"; trap 'rm -f -- "$$fips_log"' EXIT; \
+	status=0; GODEBUG=fips140=only "./$(BINARY)" --prefix 0 --workers 1 --dry-run >"$$fips_log" 2>&1 || status=$$?; \
+	test "$$status" -eq 1; grep -Fq 'X25519 public-key derivation unavailable' "$$fips_log"; \
+	if grep -Eq 'panic:|fatal error:' "$$fips_log"; then cat "$$fips_log"; exit 1; fi
+	$(MAKE) compatibility

@@ -18,17 +18,9 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
-)
-
-const (
-	goldenX25519Private = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e5f"
-	goldenX25519Public  = "8f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285f"
-	goldenEd25519Seed   = "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
-	goldenEd25519Public = "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7"
-	goldenIdentityHash  = "aca31af0441d81dbec71e82da0b4b5f5"
-	goldenLXMFAddress   = "fae321c442e3c9bdcd7a3e79d850e03c"
 )
 
 // Preserve the original RNS 1.4.2 regression vector alongside the larger corpus
@@ -153,60 +145,32 @@ func assertFixtureValue(t *testing.T, name, got, want string) {
 }
 
 func TestValidateInputsRejectsInvalidWorkerCounts(t *testing.T) {
-	originalPrefix, originalPostfix, originalWorkers := prefix, postfix, workers
-	originalDryRun, originalPrivateExports := dryRun, includePrivateExports
-	originalBenchmark := benchmarkDuration
-	t.Cleanup(func() {
-		prefix, postfix, workers = originalPrefix, originalPostfix, originalWorkers
-		dryRun, includePrivateExports = originalDryRun, originalPrivateExports
-		benchmarkDuration = originalBenchmark
-	})
-	prefix, postfix = "a", ""
-	dryRun, includePrivateExports = false, false
-	benchmarkDuration = 0
-
-	workers = 0
-	if err := validateInputs(); err == nil {
-		t.Fatal("expected zero workers to be rejected")
+	cfg := config{prefix: "a"}
+	for _, n := range []int{0, maxWorkerCount + 1} {
+		cfg.workers = n
+		if validateInputs(cfg) == nil {
+			t.Fatal("invalid workers accepted")
+		}
 	}
-	workers = maxWorkerCount + 1
-	if err := validateInputs(); err == nil {
-		t.Fatal("expected excessive worker count to be rejected")
-	}
-
-	workers = 1
-	dryRun, includePrivateExports = true, true
-	if err := validateInputs(); err == nil {
-		t.Fatal("expected private exports with dry-run to be rejected")
+	cfg.workers = 1
+	cfg.dryRun, cfg.includePrivateExports = true, true
+	if validateInputs(cfg) == nil {
+		t.Fatal("private exports with dry run accepted")
 	}
 }
 
 func TestValidateInputsForBenchmarkMode(t *testing.T) {
-	originalPrefix, originalPostfix, originalWorkers := prefix, postfix, workers
-	originalDryRun, originalPrivateExports := dryRun, includePrivateExports
-	originalBenchmark := benchmarkDuration
-	t.Cleanup(func() {
-		prefix, postfix, workers = originalPrefix, originalPostfix, originalWorkers
-		dryRun, includePrivateExports = originalDryRun, originalPrivateExports
-		benchmarkDuration = originalBenchmark
-	})
-
-	prefix, postfix = "", ""
-	workers = 1
-	dryRun, includePrivateExports = false, false
-	benchmarkDuration = time.Second
-	if err := validateInputs(); err != nil {
-		t.Fatalf("valid benchmark mode rejected: %v", err)
+	cfg := config{workers: 1, benchmarkDuration: time.Second}
+	if err := validateInputs(cfg); err != nil {
+		t.Fatal(err)
 	}
-
-	prefix = "a"
-	if err := validateInputs(); err == nil {
-		t.Fatal("expected benchmark with a vanity pattern to be rejected")
+	cfg.prefix = "a"
+	if validateInputs(cfg) == nil {
+		t.Fatal("benchmark pattern accepted")
 	}
-	prefix = ""
-	dryRun = true
-	if err := validateInputs(); err == nil {
-		t.Fatal("expected benchmark with dry-run to be rejected")
+	cfg.prefix, cfg.dryRun = "", true
+	if validateInputs(cfg) == nil {
+		t.Fatal("benchmark dry run accepted")
 	}
 }
 
@@ -306,7 +270,8 @@ func TestSearcherReturnsExactlyOneCompatibleResult(t *testing.T) {
 	rng := &repeatingReader{pattern: goldenRandomInput(t)}
 	search := newSearcher(matcher, rng)
 
-	identity, err := search.run(context.Background(), 16)
+	var identity Identity
+	err = search.run(context.Background(), 16, &identity)
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -323,7 +288,7 @@ func TestEachCandidateConsumesExactly64FreshReaderBytes(t *testing.T) {
 	}
 	rng := &countingReader{reader: &repeatingReader{pattern: goldenRandomInput(t)}}
 	search := newSearcher(matcher, rng)
-	if _, err := search.run(context.Background(), 1); err != nil {
+	if err := search.run(context.Background(), 1, new(Identity)); err != nil {
 		t.Fatal(err)
 	}
 	if got := rng.BytesRead(); got != identityPrivateKeySize {
@@ -354,7 +319,7 @@ func TestSearcherPropagatesRandomSourceFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	search := newSearcher(matcher, errorReader{})
-	_, err = search.run(context.Background(), 4)
+	err = search.run(context.Background(), 4, new(Identity))
 	if err == nil || !strings.Contains(err.Error(), "secure random source failed") {
 		t.Fatalf("expected random-source failure, got %v", err)
 	}
@@ -368,7 +333,7 @@ func TestSearcherHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	search := newSearcher(matcher, &repeatingReader{pattern: goldenRandomInput(t)})
-	_, err = search.run(ctx, 8)
+	err = search.run(ctx, 8, new(Identity))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", err)
 	}
@@ -379,7 +344,7 @@ func TestSearcherBenchmarkModeRunsUntilDeadline(t *testing.T) {
 	search.stopOnMatch = false
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	_, err := search.run(ctx, 1)
+	err := search.run(ctx, 1, new(Identity))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected benchmark deadline, got %v", err)
 	}
@@ -410,7 +375,8 @@ func TestSearcherCancellationDuringCandidate(t *testing.T) {
 				cancel()
 				return copy(p, raw), nil
 			}))
-			identity, err := search.run(ctx, 1)
+			var identity Identity
+			err = search.run(ctx, 1, &identity)
 			if matches {
 				if err != nil {
 					t.Fatalf("discarded completed winner: %v", err)
@@ -440,7 +406,8 @@ func TestSaveIdentityDefaultMetadataContainsNoPrivateExports(t *testing.T) {
 	path := filepath.Join(dir, "identity")
 	identity := goldenIdentity(t)
 
-	if err := testOutput(t, path).saveIdentity(&identity, false); err != nil {
+	if result := testOutput(t, path).saveIdentity(&identity, addressMatcher{}, false); !result.saved() {
+		err := result.cause
 		t.Fatalf("saveIdentity failed: %v", err)
 	}
 
@@ -486,7 +453,8 @@ func TestSaveIdentityPrivateExportsRequireExplicitOptIn(t *testing.T) {
 	path := filepath.Join(dir, "identity")
 	identity := goldenIdentity(t)
 
-	if err := testOutput(t, path).saveIdentity(&identity, true); err != nil {
+	if result := testOutput(t, path).saveIdentity(&identity, addressMatcher{}, true); !result.saved() {
+		err := result.cause
 		t.Fatalf("saveIdentity failed: %v", err)
 	}
 	metadata, err := os.ReadFile(path + ".txt")
@@ -515,7 +483,7 @@ func TestSaveIdentityRejectsInconsistentDerivedFields(t *testing.T) {
 	identity := goldenIdentity(t)
 	identity.Address[0] ^= 0xff
 
-	if err := testOutput(t, path).saveIdentity(&identity, false); err == nil {
+	if result := testOutput(t, path).saveIdentity(&identity, addressMatcher{}, false); !result.internal {
 		t.Fatal("expected inconsistent identity to be rejected")
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -534,20 +502,11 @@ func TestSaveIdentityPreservesWinnerAfterLateCollision(t *testing.T) {
 				t.Fatal(err)
 			}
 			identity := goldenIdentity(t)
-			err := testOutput(t, path).saveIdentity(&identity, false)
-			if err == nil {
-				t.Fatal("expected collision error")
+			result := testOutput(t, path).saveIdentity(&identity, addressMatcher{}, false)
+			if !result.saved() || len(result.Deviations) == 0 {
+				t.Fatalf("expected saved collision deviation: %v", result)
 			}
-			var recovery *recoverableWriteError
-			savedPath := path
-			if suffix == "" {
-				if !errors.As(err, &recovery) {
-					t.Fatalf("expected recoverable identity: %v", err)
-				}
-				savedPath = recovery.recoveryPath
-			} else if !strings.Contains(err.Error(), "identity was saved") {
-				t.Fatalf("expected explicit partial success: %v", err)
-			}
+			savedPath := result.Verified[0]
 			data, readErr := os.ReadFile(savedPath)
 			if readErr != nil {
 				t.Fatal(readErr)
@@ -577,10 +536,10 @@ func TestWriteFileSafelyRefusesExistingTarget(t *testing.T) {
 	path := filepath.Join(dir, "target")
 	output := testOutput(t, path)
 
-	if err := output.writeFile(output.name, []byte("first"), 0o600, output.root.Link, false); err != nil {
+	if err := output.writeFile(output.name, []byte("first"), 0o600, false); err != nil {
 		t.Fatalf("initial write failed: %v", err)
 	}
-	if err := output.writeFile(output.name, []byte("second"), 0o600, output.root.Link, false); err == nil {
+	if err := output.writeFile(output.name, []byte("second"), 0o600, false); err == nil {
 		t.Fatal("expected overwrite refusal")
 	}
 	data, err := os.ReadFile(path)
@@ -597,10 +556,11 @@ func TestWriteFileSafelyFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
 	path := filepath.Join(dir, "target")
 	output := testOutput(t, path)
 	linkUnavailable := func(string, string) error {
-		return errors.New("hard links unavailable")
+		return syscall.ENOTSUP
 	}
 
-	if err := output.writeFile(output.name, []byte("identity"), 0o600, linkUnavailable, false); err != nil {
+	output.root = &faultDir{dirOps: output.root, link: linkUnavailable}
+	if err := output.writeFile(output.name, []byte("identity"), 0o600, false); err != nil {
 		t.Fatalf("exclusive fallback failed: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -610,7 +570,7 @@ func TestWriteFileSafelyFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
 	if string(data) != "identity" {
 		t.Fatalf("fallback content = %q", data)
 	}
-	if err := output.writeFile(output.name, []byte("replacement"), 0o600, linkUnavailable, false); err == nil {
+	if err := output.writeFile(output.name, []byte("replacement"), 0o600, false); err == nil {
 		t.Fatal("fallback overwrote an existing target")
 	}
 }
@@ -627,7 +587,8 @@ func TestRecoverableIdentityWriteRetainsCompleteTempOnPublicationRace(t *testing
 		return errors.New("injected publication race")
 	}
 
-	err := output.writeFile(output.name, secret, 0o600, publicationRace, true)
+	output.root = &faultDir{dirOps: output.root, link: publicationRace}
+	err := output.writeFile(output.name, secret, 0o600, true)
 	var recoveryErr *recoverableWriteError
 	if !errors.As(err, &recoveryErr) {
 		t.Fatalf("expected recoverable write error, got %v", err)
@@ -690,9 +651,23 @@ func BenchmarkAddressMatcher(b *testing.B) {
 }
 
 func BenchmarkSecureCandidate(b *testing.B) {
+	identity := goldenIdentity(b)
+	var public [64]byte
+	copy(public[:32], identity.X25519Public[:])
+	material := newAddressHashMaterial()
+	defer wipeIdentitySecrets(&identity)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := io.ReadFull(rand.Reader, identity.Ed25519Seed[:]); err != nil {
+			b.Fatal(err)
+		}
+		rederiveSigningHalf(&identity, &public, &material)
+	}
+}
+func BenchmarkSegmentStart(b *testing.B) {
 	var identity Identity
-	var input [identityPrivateKeySize]byte
-	var publicKey [64]byte
+	var input [64]byte
+	var public [64]byte
 	material := newAddressHashMaterial()
 	defer wipeIdentitySecrets(&identity)
 	defer wipeBytes(input[:])
@@ -701,9 +676,10 @@ func BenchmarkSecureCandidate(b *testing.B) {
 		if _, err := io.ReadFull(rand.Reader, input[:]); err != nil {
 			b.Fatal(err)
 		}
-		if err := deriveCandidate(&identity, &input, &publicKey, &material); err != nil {
+		if err := deriveCandidate(&identity, &input, &public, &material); err != nil {
 			b.Fatal(err)
 		}
+		wipeBytes(input[:])
 	}
 }
 
@@ -834,6 +810,7 @@ func testOutput(t *testing.T, path string) *outputTarget {
 	if err != nil {
 		t.Fatal(err)
 	}
+	output.allowWeak = runtime.GOOS == "windows"
 	t.Cleanup(func() { output.root.Close() })
 	return output
 }
@@ -862,9 +839,10 @@ func TestOutputDirectoryReplacementCannotRedirectIdentity(t *testing.T) {
 			}
 			link := output.root.Link
 			if fallback {
-				link = func(string, string) error { return errors.New("no hard links") }
+				link = func(string, string) error { return syscall.ENOTSUP }
 			}
-			if err := output.writeFile(output.name, []byte("private data"), 0600, link, true); err != nil {
+			output.root = &faultDir{dirOps: output.root, link: link}
+			if err := output.writeFile(output.name, []byte("private data"), 0600, true); err != nil {
 				t.Fatal(err)
 			}
 			got, err := os.ReadFile(filepath.Join(moved, "identity"))

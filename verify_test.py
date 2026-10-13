@@ -21,7 +21,7 @@ class VerifyScriptTests(unittest.TestCase):
         self.manual_result = (bytes.fromhex("11" * 16), bytes.fromhex("22" * 16), bytes(64))
 
     def run_main(self, result, *, manual_only=False, expected=None):
-        args = argparse.Namespace(identity_file=self.identity_path, manual_only=manual_only, expect_rns_version=expected, provider="auto")
+        args = argparse.Namespace(no_metadata=False, identity_file=self.identity_path, manual_only=manual_only, expect_rns_version=expected, provider="auto")
         with mock.patch.object(verify, "parse_args", return_value=args), mock.patch.object(verify, "compute_lxmf_address", return_value=self.manual_result), mock.patch.object(verify, "verify_with_reticulum", return_value=result):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 return verify.main()
@@ -37,6 +37,17 @@ class VerifyScriptTests(unittest.TestCase):
     def test_missing_reference_fails_closed(self):
         self.assertEqual(self.run_main(None), 2)
         self.assertEqual(self.run_main(None, manual_only=True), 0)
+
+    def test_reference_exception_does_not_disclose_private_material(self):
+        args = argparse.Namespace(no_metadata=True, identity_file=self.identity_path,
+                                  manual_only=False, expect_rns_version=None, provider="auto")
+        output, errors = io.StringIO(), io.StringIO()
+        with mock.patch.object(verify, "compute_lxmf_address", return_value=self.manual_result), \
+                mock.patch.object(verify, "verify_with_reticulum", side_effect=ValueError(self.private.hex())), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            self.assertEqual(verify.verify_identity(args), 1)
+        self.assertNotIn(self.private.hex(), output.getvalue() + errors.getvalue())
+        self.assertIn("ValueError", errors.getvalue())
 
     def test_matching_behavior_accepts_different_versions(self):
         for version in ("1.4.2", "1.5.2", "future-test-version"):
@@ -115,6 +126,30 @@ class VerifyScriptTests(unittest.TestCase):
 
     def test_missing_metadata_is_optional(self):
         self.assertIsNone(verify.verify_txt_file(*self.manual_result, self.private, self.identity_path))
+
+    def test_legacy_sidecar_has_actionable_diagnostic(self):
+        content = self.metadata() + "\nPrivate Key (Base64):\n  PUBLIC-TEST-EXPORT"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertFalse(self.check_metadata_without_capture(content))
+        self.assertIn("unlabelled private exports", output.getvalue())
+        self.assertIn("--inspect", output.getvalue())
+
+    def check_metadata_without_capture(self, content):
+        pathlib.Path(self.identity_path + ".txt").write_text(content, encoding="utf-8")
+        return verify.verify_txt_file(*self.manual_result, self.private, self.identity_path)
+
+    def test_absent_and_explicitly_skipped_metadata_are_visible(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertIsNone(verify.verify_txt_file(*self.manual_result, self.private, self.identity_path))
+        self.assertIn("no sidecar", output.getvalue())
+        args = argparse.Namespace(identity_file=self.identity_path, no_metadata=True,
+                                  manual_only=True, expect_rns_version=None, provider="auto")
+        output = io.StringIO()
+        with mock.patch.object(verify, "compute_lxmf_address", return_value=self.manual_result), contextlib.redirect_stdout(output):
+            self.assertEqual(verify.verify_identity(args), 0)
+        self.assertIn("explicitly skips", output.getvalue())
 
 
 if __name__ == "__main__":

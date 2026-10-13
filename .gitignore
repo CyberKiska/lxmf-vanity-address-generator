@@ -12,6 +12,7 @@ lxmf-vanity-darwin-*
 # Test files
 identity
 identity.*
+!identity.go
 test_identity*
 
 # Go build artifacts
@@ -34,3 +35,9 @@ path/
 __pycache__/
 .venv/
 .reference-rns/
+
+# Local planning and review records
+IMPLEMENTATION_PLAN.md
+TECHNICAL.md
+PERFORMANCE.md
+VALIDATION.md
