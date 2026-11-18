@@ -54,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,7 +109,7 @@ jobs:
           set -euo pipefail
           test -z "$(gofmt -s -l .)"
           go mod tidy -diff
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+          for target in linux/amd64 linux/arm64 darwin/arm64 windows/amd64 windows/arm64; do
             CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go vet ./...
           done
           go test -race -count=1 ./...
@@ -144,7 +144,6 @@ jobs:
         include:
           - {goos: linux, goarch: amd64}
           - {goos: linux, goarch: arm64}
-          - {goos: darwin, goarch: amd64}
           - {goos: darwin, goarch: arm64}
           - {goos: windows, goarch: amd64}
           - {goos: windows, goarch: arm64}
@@ -206,8 +205,7 @@ jobs:
         include:
           - {goos: linux, goarch: amd64, runner: ubuntu-latest}
           - {goos: linux, goarch: arm64, runner: ubuntu-24.04-arm}
-          - {goos: darwin, goarch: amd64, runner: macos-15-intel}
-          - {goos: darwin, goarch: arm64, runner: macos-latest}
+          - {goos: darwin, goarch: arm64, runner: macos-15}
           - {goos: windows, goarch: amd64, runner: windows-latest}
           - {goos: windows, goarch: arm64, runner: windows-11-arm}
     steps:
@@ -243,7 +241,7 @@ jobs:
 
   reproducible:
     needs: [policy, build]
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -296,7 +294,6 @@ jobs:
           subject-path: |
             artifacts/lxmf-vanity-linux-amd64
             artifacts/lxmf-vanity-linux-arm64
-            artifacts/lxmf-vanity-darwin-amd64
             artifacts/lxmf-vanity-darwin-arm64
             artifacts/lxmf-vanity-windows-amd64.exe
             artifacts/lxmf-vanity-windows-arm64.exe

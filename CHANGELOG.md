@@ -12,16 +12,18 @@ All notable user-visible changes are recorded here.
 - Progress probability and remaining-time estimates; plain pipes receive infrequent status lines.
 - Canonical Go module path, installation and security-reporting guidance.
 - Current stable RNS/LXMF compatibility workflows with both providers, actual LXMF delivery construction, recorded wheel provenance, and scheduled failure notification.
-- Six native artifact smoke jobs, cross-host reproducibility checking, isolated attestations and owner-tag release publication, all using the same artifact bytes.
+- Five native artifact smoke jobs, cross-host reproducibility checking, isolated attestations and owner-tag release publication, all using the same artifact bytes.
 - `make lint` and `make gate` with a shared build-target list.
 
 ### Changed
+
+- macOS releases target Apple Silicon (arm64). Linux and Windows releases support amd64 and arm64.
 
 - The default segmented generator draws both inputs independently at segment start, refreshes the signing seed for each discarded candidate, and replaces the X25519 half after 65,536 candidates. `--generator independent` redraws both halves for every candidate.
 - CLI parsing is independent of execution; help succeeds and invalid arguments exit with status 2 before searching.
 - Progress and notices use stderr; stdout contains only the final public result.
 - Public sidecars disclose only a quoted basename. The verifier explicitly reports absent/skipped metadata and gives remediation for legacy unlabelled private exports.
-- CI selects its toolchain from `go.mod`, checks all six target vets and module hygiene, and runs Python tests on Linux/macOS/Windows.
+- CI selects its toolchain from `go.mod`, checks all five target vets and module hygiene, and runs Python tests on Linux/macOS/Windows.
 - Verification dependencies updated to cryptography 50.0.2 and pycparser 3.11 with wheel hashes; artifact uploads use the pinned 7.0.2 action.
 
 ### Fixed

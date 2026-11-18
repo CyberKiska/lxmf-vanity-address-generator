@@ -130,7 +130,7 @@ func TestGoModHasNoRequirements(t *testing.T) {
 	}
 }
 func TestDefaultBuildImportsOnlyStandardLibrary(t *testing.T) {
-	for _, target := range []string{"linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64", "windows/amd64", "windows/arm64"} {
+	for _, target := range []string{"linux/amd64", "linux/arm64", "darwin/arm64", "windows/amd64", "windows/arm64"} {
 		t.Run(target, func(t *testing.T) {
 			parts := strings.Split(target, "/")
 			cmd := exec.Command("go", "list", "-deps", "-json", ".")

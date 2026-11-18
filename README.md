@@ -22,7 +22,7 @@ chmod u+x ./lxmf-vanity-linux-amd64
 ./lxmf-vanity-linux-amd64 --version
 ```
 
-On macOS use `shasum -a 256 -c <binary>.sha256`. On Windows compare
+The macOS download targets Apple Silicon (arm64). On macOS use `shasum -a 256 -c <binary>.sha256`. On Windows compare
 `(Get-FileHash <binary>.exe -Algorithm SHA256).Hash` with the bundled `.sha256`
 file, and use the same `gh attestation verify` command. Checksums detect
 corruption; attestations bind bytes to the build. Pull-request artifacts are
@@ -253,28 +253,28 @@ behavioral mismatch causes a nonzero exit.
 ```bash
 make test          # Go and Python tests
 make check         # tests, race detector, vet
-make lint          # format, six target vets, module hygiene
+make lint          # format, five target vets, module hygiene
 make gate PYTHON=.venv/bin/python # full local gate; install rns/lxmf first
 make fuzz          # bounded matcher fuzzing
 make compatibility PYTHON=.venv/bin/python
 make oracle PYTHON=.venv/bin/python RNS_FLAGS='--expect-rns-version 1.6.1 --provider internal'
 make bench
-make build-all     # Linux/macOS/Windows, amd64/arm64
+make build-all     # Linux and Windows amd64/arm64; macOS arm64
 make clean         # removes known build binaries; preserves identities
 ```
 
 In **Actions → Build binaries → a successful run → Artifacts**, download the
-matching Linux/macOS/Windows bundle for amd64/arm64. Bundles include checksums
+bundle for Linux or Windows (amd64/arm64) or macOS (arm64). Bundles include checksums
 and build information and expire after 60 days. Published releases persist.
 
 CI uses the single release Go toolchain for tests and builds; it does not
 multiply jobs by historical Go or RNS versions. The two RNS providers run
 sequentially in one compatibility job.
 
-The configured release workflow gates six cgo-free PIE artifacts on platform tests,
+The configured release workflow gates five cgo-free PIE artifacts on platform tests,
 reference tests, race/fuzz/FIPS checks and `govulncheck`. Artifacts include SHA-256
 checksums and build information. The workflow executes downloaded artifacts on
-all six matching native runners before
+all five matching native runners before
 attestation/release, and linux/amd64 is rebuilt on macOS for byte comparison.
 The build job holds read permission only; isolated attestation and publication
 jobs execute no project scripts or downloaded binaries. Successful trusted

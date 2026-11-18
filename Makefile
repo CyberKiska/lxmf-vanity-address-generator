@@ -16,7 +16,7 @@ build:
 build-debug:
 	go build -o "$(BINARY)-debug" .
 
-TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
+TARGETS := linux/amd64 linux/arm64 darwin/arm64 windows/amd64 windows/arm64
 
 # One platform list drives builds and lint. Cleanup remains an explicit allow-list.
 build-all:
