@@ -28,19 +28,19 @@ class BuildRecipeTests(unittest.TestCase):
     def test_compatibility_propagates_each_stage_failure(self):
         generator = self.path / "lxmf-vanity"
         reference = self.path / "reference"
-        for failing_stage in ("generation", "oracle", "verification"):
+        for failing_stage in ("generation", "oracle", "verification", None):
             with self.subTest(stage=failing_stage):
-                generator.write_text("#!/bin/sh\nexit " + ("23" if failing_stage == "generation" else "0") + "\n")
+                generator.write_text("#!/bin/sh\nexit " + ("23" if failing_stage == "generation" else "0") + "\n", newline="\n")
                 reference.write_text(
                     "#!/bin/sh\ncase \"$1\" in\n"
                     "scripts/rns_compatibility_oracle.py) exit " + ("23" if failing_stage == "oracle" else "0") + ";;\n"
                     "verify.py) exit " + ("23" if failing_stage == "verification" else "0") + ";;\n"
-                    "*) exit 91;;\nesac\n"
+                    "*) exit 91;;\nesac\n", newline="\n"
                 )
                 generator.chmod(0o700)
                 reference.chmod(0o700)
                 result = subprocess.run(
-                    ["make", "compatibility", "-o", "build", f"PYTHON={reference}"],
+                    ["make", "compatibility", "-o", "build", "PYTHON=./reference"],
                     cwd=self.path, capture_output=True, timeout=10,
                 )
-                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.returncode == 0, failing_stage is None, result.stderr)

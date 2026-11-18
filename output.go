@@ -58,16 +58,13 @@ func appendUnique(values []string, value string) []string {
 	return append(values, value)
 }
 func openOutputTarget(path string) (*outputTarget, error) {
-	if path == "" || os.IsPathSeparator(path[len(path)-1]) {
+	_, name := filepath.Split(path)
+	if name == "." || !filepath.IsLocal(name) {
 		return nil, fmt.Errorf("output path must name a file")
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
-	}
-	name := filepath.Base(absolute)
-	if name == "." || !filepath.IsLocal(name) {
-		return nil, fmt.Errorf("invalid output filename %q", name)
 	}
 	root, err := os.OpenRoot(filepath.Dir(absolute))
 	if err != nil {
@@ -105,9 +102,22 @@ func (o *outputTarget) ensureDoesNotExist(name string) error {
 }
 func (o *outputTarget) fullPath(name string) string { return filepath.Join(o.root.Name(), name) }
 func (o *outputTarget) checkLocation() error {
-	original, e1 := o.root.Stat(".")
-	current, e2 := os.Stat(o.root.Name())
-	if e1 != nil || e2 != nil || !os.SameFile(original, current) {
+	original, err := o.root.Stat(".")
+	if err != nil {
+		return fmt.Errorf("inspect opened output directory: %w", err)
+	}
+	// Stat through a handle. On Windows, os.Stat(path) can defer its file-ID
+	// lookup to SameFile, which reopens the directory with no sharing rights.
+	// The terminal dot requires a directory even if the path was replaced.
+	dir, err := os.Open(o.root.Name() + string(os.PathSeparator) + ".")
+	if err != nil {
+		return fmt.Errorf("reopen output directory to verify its location: %w", err)
+	}
+	current, err := dir.Stat()
+	if err := errors.Join(err, dir.Close()); err != nil {
+		return fmt.Errorf("verify output directory location: %w", err)
+	}
+	if !os.SameFile(original, current) {
 		return fmt.Errorf("output directory %q moved or was replaced; files are inside the originally opened directory, which is no longer at the requested path", o.root.Name())
 	}
 	return nil

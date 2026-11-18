@@ -77,12 +77,18 @@ func TestSaveFaultStatesAreBoundedAndTruthful(t *testing.T) {
 	}
 }
 func TestOutputPathSeparators(t *testing.T) {
-	for _, path := range []string{"", "dir/"} {
-		if _, err := openOutputTarget(path); err == nil {
-			t.Fatal("directory syntax accepted")
+	for _, suffix := range []string{"/", "/.", "/child/.."} {
+		path := filepath.Join(t.TempDir(), "missing") + suffix
+		if target, err := openOutputTarget(path); err == nil {
+			target.root.Close()
+			t.Errorf("directory syntax accepted: %q", path)
 		}
 	}
-	path := filepath.Join(t.TempDir(), "file\\")
+	if _, err := openOutputTarget(""); err == nil {
+		t.Fatal("empty output path accepted")
+	}
+	// Join cleans a trailing separator on Windows. Append it to the finished path.
+	path := filepath.Join(t.TempDir(), "file") + "\\"
 	if os.IsPathSeparator('\\') {
 		if _, err := openOutputTarget(path); err == nil {
 			t.Fatal("Windows trailing separator accepted")

@@ -49,14 +49,14 @@ class WorkflowPolicyTests(unittest.TestCase):
                 "make": "#!/bin/sh\nexit 0\n",
                 ".venv/bin/python": "#!/bin/sh\ncase \"$*\" in *'--checks core'*) exit \"$CORE_CODE\";; *) exit \"$INTEROP_CODE\";; esac\n",
             }.items():
-                (root / name).write_text(text)
+                (root / name).write_text(text, newline="\n")
                 (root / name).chmod(0o700)
             for core, interop, passes in ((0, 0, True), (0, 3, True), (1, 0, False),
                                           (2, 0, False), (3, 0, False), (0, 1, False),
                                           (0, 2, False), (0, 4, False)):
                 env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
                            CORE_CODE=str(core), INTEROP_CODE=str(interop),
-                           GITHUB_STEP_SUMMARY=str(root / "summary"))
+                           GITHUB_STEP_SUMMARY="summary")
                 result = subprocess.run(["bash", "-c", script], cwd=root, env=env,
                                         capture_output=True, timeout=10)
                 self.assertEqual(result.returncode == 0, passes, (core, interop))
@@ -70,7 +70,7 @@ class WorkflowPolicyTests(unittest.TestCase):
             gh.write_text("#!/bin/sh\ncase \"$1 $2\" in\n"
                           "'issue list') if [ -f created ]; then printf '1\\n'; else printf '0\\n'; fi;;\n"
                           "'run download') exit 1;;\n'label create') exit 0;;\n'issue create') printf 'created\\n' >> created;;\n"
-                          "*) exit 91;;\nesac\n")
+                          "*) exit 91;;\nesac\n", newline="\n")
             gh.chmod(0o700)
             env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
                        RUN_LINK="https://example.invalid/run", REFERENCE_RUN_ID="123")
