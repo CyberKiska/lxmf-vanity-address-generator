@@ -52,3 +52,26 @@ func TestProtectionIsRecheckedBeforeSecretWrite(t *testing.T) {
 		t.Fatal("secret written before protection passed")
 	}
 }
+
+func TestSaveRechecksDirectoryAfterLongSearch(t *testing.T) {
+	dir := t.TempDir()
+	out := testOutput(t, filepath.Join(dir, "saved"))
+	if err := out.preflight(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0770); err != nil {
+		t.Fatal(err)
+	}
+	identity := goldenIdentity(t)
+	result := out.saveIdentity(&identity, addressMatcher{}, true)
+	entries, err := os.ReadDir(dir)
+	if err != nil || result.saved() || result.cause == nil || len(entries) != 0 {
+		t.Fatal("changed directory policy did not prevent the private write")
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if result := out.saveIdentity(&identity, addressMatcher{}, true); !result.saved() {
+		t.Fatalf("retry in secured directory failed: %v", result.cause)
+	}
+}

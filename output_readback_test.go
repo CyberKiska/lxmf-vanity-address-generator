@@ -60,6 +60,42 @@ func TestSaveRetainsFullWriteAfterSyncOrCloseFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestRecoveryReusesCapacityAfterRetainedFilesDisappear(t *testing.T) {
+	out := testOutput(t, filepath.Join(t.TempDir(), "saved"))
+	faults := &faultDir{dirOps: out.root, rules: []faultRule{{op: "sync", err: syscall.EIO}}}
+	out.root = faults
+	identity := goldenIdentity(t)
+	for range 2 {
+		out.saveIdentity(&identity, addressMatcher{}, false)
+	}
+	if len(out.retained) != 2 {
+		t.Fatal("expected two retained copies after persistent sync errors")
+	}
+	for _, f := range out.retained {
+		if err := out.root.Remove(f.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	faults.rules = nil
+	if result := out.saveIdentity(&identity, addressMatcher{}, false); !result.saved() {
+		t.Fatalf("missing entries permanently blocked recovery: %v", result.cause)
+	}
+}
+
+func TestSaveVerifiesLinkThatReportedFailureAfterPublication(t *testing.T) {
+	out := testOutput(t, filepath.Join(t.TempDir(), "saved"))
+	out.root = &faultDir{dirOps: out.root, rules: []faultRule{{op: "link", nth: 1, after: true, err: syscall.EIO}}}
+	identity := goldenIdentity(t)
+	result := out.saveIdentity(&identity, addressMatcher{}, false)
+	if len(result.Verified) != 1 || result.Verified[0] != out.path || len(result.Deviations) == 0 {
+		t.Fatalf("ambiguous link outcome: %+v", result)
+	}
+	entries, err := os.ReadDir(filepath.Dir(out.path))
+	if err != nil || len(entries) != 2 {
+		t.Fatal("expected the identity and its public sidecar")
+	}
+}
 func TestSaveReadbackDetectsReplacementAndHardLinkCorruption(t *testing.T) {
 	for _, inPlace := range []bool{false, true} {
 		t.Run(map[bool]string{false: "entry-replacement", true: "shared-inode-mutation"}[inPlace], func(t *testing.T) {

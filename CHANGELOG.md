@@ -26,6 +26,7 @@ All notable user-visible changes are recorded here.
 
 ### Fixed
 
+- Saves recheck directory permissions after search, reuse recovery slots for missing files, and verify the final name when a hard link succeeds despite a filesystem error. Both identity and sidecar publication now flush the directory where supported.
 - Completed matching candidates survive another worker's returned error and search cancellation; worker errors remain diagnostics.
 - Blocked progress and closed pipes cannot delay saving a winner. Failed final delivery returns status 3 when an identity was saved.
 - Save gates rederive fields and recheck the pattern; exact bounded read-back, retained complete temporaries, hard-link corruption detection and bounded recovery state prevent false saved reports.

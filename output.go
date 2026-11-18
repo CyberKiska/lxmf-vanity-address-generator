@@ -260,6 +260,14 @@ func (o *outputTarget) syncDirectory() error {
 	return nil
 }
 
+func (o *outputTarget) recordDirectorySync(result *saveResult) {
+	if err := o.syncDirectory(); err == errDirSyncUnsupported {
+		result.Notices = appendUnique(result.Notices, err.Error())
+	} else {
+		o.note(err)
+	}
+}
+
 func (o *outputTarget) protection(err error) error {
 	if err == nil {
 		return nil
@@ -270,7 +278,7 @@ func (o *outputTarget) protection(err error) error {
 	o.notices = appendUnique(o.notices, "Weak output protection explicitly accepted: "+err.Error())
 	return nil
 }
-func (o *outputTarget) preflight() (err error) {
+func (o *outputTarget) checkDirectoryProtection() error {
 	directory, err := o.root.Stat(".")
 	if err != nil {
 		return fmt.Errorf("inspect opened output directory: %w", err)
@@ -281,6 +289,12 @@ func (o *outputTarget) preflight() (err error) {
 	}
 	if notice != "" {
 		o.notices = appendUnique(o.notices, notice)
+	}
+	return nil
+}
+func (o *outputTarget) preflight() (err error) {
+	if err := o.checkDirectoryProtection(); err != nil {
+		return err
 	}
 	// Advisory Git notice uses only directory entries, never Git commands/hooks.
 	if _, err := o.root.Lstat(".git"); err == nil {
@@ -353,9 +367,21 @@ func (o *outputTarget) preflight() (err error) {
 // persist keeps at most two owned files. Complete files are reused on retries;
 // a replacement is verified before a corrupt predecessor can be retired.
 func (o *outputTarget) persist(name string, data []byte, state *[]*ownedFile) (saved string, err error) {
+	// Permissions can change during a long search or between recovery rounds.
+	if err := o.checkDirectoryProtection(); err != nil {
+		return "", err
+	}
 	var candidate *ownedFile
 	var remaining []*ownedFile
 	for _, f := range *state {
+		entry, statErr := o.root.Lstat(f.name)
+		if errors.Is(statErr, os.ErrNotExist) {
+			continue
+		}
+		if statErr == nil && f.info != nil && !os.SameFile(entry, f.info) {
+			o.note(fmt.Errorf("retained entry %s was replaced; leaving its replacement untouched", o.fullPath(f.name)))
+			continue
+		}
 		if !f.complete {
 			if cleanupErr := o.removeOwned(f); cleanupErr != nil {
 				o.note(cleanupErr)
@@ -409,6 +435,14 @@ func (o *outputTarget) persist(name string, data []byte, state *[]*ownedFile) (s
 		publishErr = syscall.ENOTSUP
 	} else {
 		publishErr = o.root.Link(candidate.name, name)
+		if publishErr != nil && !errors.Is(publishErr, os.ErrExist) {
+			// A filesystem can report failure after creating the link. Only
+			// accept our own inode, then pass it through the usual read-back.
+			if entry, err := o.root.Lstat(name); err == nil && os.SameFile(entry, candidate.info) {
+				o.note(fmt.Errorf("link of %s reported an error after publication: %w", o.fullPath(name), publishErr))
+				publishErr = nil
+			}
+		}
 	}
 	if publishErr != nil && linkUnsupported(publishErr) && len(*state) < 2 {
 		file, createErr := o.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
@@ -480,15 +514,12 @@ func (o *outputTarget) saveIdentity(identity *Identity, matcher addressMatcher, 
 	o.note(err)
 	if saved != "" {
 		result.Verified = append(result.Verified, o.fullPath(saved))
-		if err := o.syncDirectory(); err == errDirSyncUnsupported {
-			result.Notices = appendUnique(result.Notices, err.Error())
-		} else {
-			o.note(err)
-		}
+		o.recordDirectorySync(&result)
 		if saved == o.name {
 			if err := o.writeIdentityInfo(identity, privateExports); err != nil {
 				o.note(fmt.Errorf("identity was saved; metadata could not be saved: %w", err))
 			}
+			o.recordDirectorySync(&result)
 		} else {
 			o.note(fmt.Errorf("requested name unavailable; identity saved as verified recovery file %s without a sidecar; use --inspect on it", o.fullPath(saved)))
 		}
@@ -504,15 +535,20 @@ func (o *outputTarget) saveIdentity(identity *Identity, matcher addressMatcher, 
 }
 
 func (o *outputTarget) collectRetained(data []byte, saved string, result *saveResult) {
+	if len(o.retained) == 0 {
+		return
+	}
+	protectionErr := o.checkDirectoryProtection()
+	o.note(protectionErr)
 	for _, f := range o.retained {
 		if f.name == saved {
 			continue
 		}
-		_, statErr := o.root.Lstat(f.name)
-		if errors.Is(statErr, os.ErrNotExist) {
+		entry, statErr := o.root.Lstat(f.name)
+		if errors.Is(statErr, os.ErrNotExist) || statErr == nil && f.info != nil && !os.SameFile(entry, f.info) {
 			continue
 		}
-		if f.complete && o.verifyOwned(f, data[:], true) == nil {
+		if protectionErr == nil && f.complete && o.verifyOwned(f, data, true) == nil {
 			if saved == "" {
 				o.note(fmt.Errorf("verified recovery file %s has no sidecar", o.fullPath(f.name)))
 			}

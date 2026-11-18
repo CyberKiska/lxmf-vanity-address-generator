@@ -41,11 +41,14 @@ func TestDirectorySyncIOErrorRemainsDeviation(t *testing.T) {
 	}
 	identity := goldenIdentity(t)
 	matcher, _ := newAddressMatcher(goldenLXMFAddress[:1], "")
-	out := testOutput(t, filepath.Join(t.TempDir(), "saved"))
-	out.root = &faultDir{dirOps: out.root, rules: []faultRule{{op: "sync", nth: 2, err: syscall.EIO}}}
-	result := out.saveIdentity(&identity, matcher, false)
-	if !result.saved() || len(result.Deviations) == 0 || len(result.Notices) != 0 {
-		t.Fatalf("I/O failure must be a deviation: %+v", result)
+	// The directory must be flushed after each published entry.
+	for _, nth := range []int{2, 4} {
+		out := testOutput(t, filepath.Join(t.TempDir(), "saved"))
+		out.root = &faultDir{dirOps: out.root, rules: []faultRule{{op: "sync", nth: nth, err: syscall.EIO}}}
+		result := out.saveIdentity(&identity, matcher, false)
+		if !result.saved() || len(result.Deviations) == 0 || len(result.Notices) != 0 {
+			t.Fatalf("directory sync %d failure must be a deviation: %+v", nth, result)
+		}
 	}
 }
 
