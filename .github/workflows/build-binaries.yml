@@ -68,13 +68,27 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14.7'
-      - name: Toolchain and platform tests
+      - name: Verify release toolchain
         shell: bash
         run: |
           set -euo pipefail
-          test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod)"
-          go test -count=1 ./...
-          python -m unittest discover -p '*_test.py'
+          test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod | tr -d '\r')"
+      - name: Native Go tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! go test -count=1 ./... 2>&1 | tee go-tests.log; then
+            awk '/--- FAIL: / || /^[[:space:]]*[[:alnum:]_]+_test\.go:[0-9]+:/ {print "::error::" $0}' go-tests.log
+            exit 1
+          fi
+      - name: Python tooling tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! python -m unittest discover -p '*_test.py' 2>&1 | tee python-tests.log; then
+            awk '/^(FAIL|ERROR): / || /^(AssertionError|[A-Za-z.]*Error): / {print "::error::" $0}' python-tests.log
+            exit 1
+          fi
 
   security-tests:
     needs: policy
