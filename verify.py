@@ -25,7 +25,7 @@ BASE32_LABEL = "Reticulum Base32 private identity"
 
 def read_limited_file(filepath, limit):
     """Read only a bounded regular file; do not block opening Unix FIFOs."""
-    fd = os.open(filepath, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    fd = os.open(filepath, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     with os.fdopen(fd, "rb") as file:
         info = os.fstat(file.fileno())
         if not stat.S_ISREG(info.st_mode):

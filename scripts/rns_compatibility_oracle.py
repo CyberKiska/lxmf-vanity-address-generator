@@ -133,12 +133,15 @@ def check_rnid_import(bootstrap, value, expected_address, encoding=None):
     # URL-safe Base64 can begin with '-'. Bind the value to -M so argparse
     # cannot interpret private identity bytes as another command-line option.
     arguments = ["-i", str(value)] if encoding is None else ["-M=" + value, encoding]
+    # Let rnid parse the original arguments in the child, without exposing
+    # reversible private exports in the operating system's process list.
+    read_arguments = "import json, sys\nsys.argv[1:] = json.load(sys.stdin)\n"
     result = subprocess.run(
-        [sys.executable, "-c", bootstrap, *arguments, "-N", "-H", "lxmf.delivery"],
+        [sys.executable, "-c", read_arguments + bootstrap],
+        input=json.dumps(arguments + ["-N", "-H", "lxmf.delivery"]),
         capture_output=True, text=True, timeout=30,
     )
-    # Neither the command nor captured output is safe to log: either can
-    # contain a private export, including in argparse error messages.
+    # Captured output can include the private export in argparse diagnostics.
     if result.returncode == 2 and re.search(
         r"unrecognized arguments: (?:-N|-H)(?:\s|$)", result.stderr
     ):
@@ -153,6 +156,21 @@ def check_cli(RNS, binary, provider, checks="all"):
     repository = str(Path(__file__).resolve().parent.parent)
     bootstrap = (f"import sys; sys.path.insert(0, {repository!r}); import verify; "
                  f"verify.load_reticulum({provider!r}); from RNS.Utilities.rnid import main; main()")
+    if checks in ("core", "all"):
+        with tempfile.TemporaryDirectory(prefix="lxmf-import-") as directory:
+            path = Path(directory) / "reference-identity"
+            reference = RNS.Identity()
+            require(reference.to_file(str(path)), "RNS could not save its own identity")
+            inspected = subprocess.run([binary, "--inspect", str(path), "--json"],
+                                       check=True, capture_output=True, timeout=30)
+            public = json.loads(inspected.stdout)
+            require(public["status"] == "inspected" and
+                    public["public_key"] == reference.get_public_key().hex() and
+                    public["identity_hash"] == reference.hash.hex() and
+                    public["address"] == RNS.Destination.hash(reference, "lxmf", "delivery").hex(),
+                    "CLI inspection of RNS-created identity differs from reference")
+            require(verify.read_limited_file(path, 64) == reference.get_private_key(),
+                    "CLI inspection changed the RNS private encoding")
     for exports in (False, True):
         with tempfile.TemporaryDirectory(prefix="lxmf-compat-") as directory:
             path = Path(directory) / "identity"

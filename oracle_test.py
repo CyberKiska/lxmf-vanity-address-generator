@@ -1,11 +1,18 @@
 """Regression checks for the reference CLI invocation; no RNS install needed."""
 
+import subprocess
 import unittest
+from unittest.mock import patch
 
 from scripts.rns_compatibility_oracle import check_rnid_import
 
 
 class RnidInvocationTests(unittest.TestCase):
+    def test_export_is_absent_from_os_process_arguments(self):
+        with patch("subprocess.run", wraps=subprocess.run) as run:
+            check_rnid_import("print('public-address')", "private-sentinel", "public-address", "-B")
+        self.assertFalse(any("private-sentinel" in arg for arg in run.call_args.args[0]))
+
     def test_leading_hyphen_export_is_an_option_value(self):
         # Exercise an actual subprocess and argparse, the parser rnid uses.
         bootstrap = """

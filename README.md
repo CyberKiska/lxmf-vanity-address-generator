@@ -106,7 +106,10 @@ Per-run summaries and provenance artifacts record selected versions, providers,
 Python/pip versions and installed wheel hashes. The 1.4.2 fixture is historical;
 the unchanged 131-vector corpus is the byte-level contract. Tests include actual
 LXMF delivery registration, signatures, encryption, Go-file loading and `rnid`
-imports. Core mismatches or unavailable checks block builds. Only specifically
+imports. The Go CLI also inspects a file saved by RNS and checks its public
+identity, delivery address and preservation of the original private bytes.
+RNS 1.6.1 and LXMF 1.3.1 pass these checks with both providers. Core
+mismatches or unavailable checks block builds. Only specifically
 recognised optional `rnid` option changes become an explicit skipped-check
 warning. Scheduled jobs may be delayed or disabled after repository inactivity.
 
@@ -240,7 +243,7 @@ behavioral mismatch causes a nonzero exit.
 
 ```bash
 # Optional CI assertion and provider selection:
-.venv/bin/python verify.py "$identity_dir/cafe" --expect-rns-version 1.5.2 --provider pyca
+.venv/bin/python verify.py "$identity_dir/cafe" --expect-rns-version 1.6.1 --provider pyca
 # Explicit independent calculation without an RNS compatibility claim:
 .venv/bin/python verify.py "$identity_dir/cafe" --manual-only
 ```
@@ -254,7 +257,7 @@ make lint          # format, six target vets, module hygiene
 make gate PYTHON=.venv/bin/python # full local gate; install rns/lxmf first
 make fuzz          # bounded matcher fuzzing
 make compatibility PYTHON=.venv/bin/python
-make oracle PYTHON=.venv/bin/python RNS_FLAGS='--expect-rns-version 1.5.2 --provider internal'
+make oracle PYTHON=.venv/bin/python RNS_FLAGS='--expect-rns-version 1.6.1 --provider internal'
 make bench
 make build-all     # Linux/macOS/Windows, amd64/arm64
 make clean         # removes known build binaries; preserves identities
