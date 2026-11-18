@@ -9,7 +9,25 @@ import tempfile
 import unittest
 
 
-@unittest.skipUnless(shutil.which("ruby") and shutil.which("bash"), "workflow parsing requires Ruby's standard YAML library and bash")
+def workflow_bash():
+    if os.name == "nt":
+        # Use Git for Windows' native MSYS Bash. An unqualified bash.exe can
+        # launch the System32 WSL shim with a different filesystem and PATH.
+        git = shutil.which("git")
+        if git:
+            result = subprocess.run([git, "--exec-path"], check=True, capture_output=True, text=True)
+            for parent in Path(result.stdout.strip()).parents:
+                bash = parent / "usr/bin/bash.exe"
+                if bash.is_file():
+                    return str(bash)
+        return None
+    return shutil.which("bash")
+
+
+BASH = workflow_bash()
+
+
+@unittest.skipUnless(shutil.which("ruby") and BASH, "workflow parsing requires Ruby's standard YAML library and Bash")
 class WorkflowPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -43,7 +61,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / ".venv/bin").mkdir(parents=True)
-            (root / "go.mod").write_text("toolchain go1.27.1\n")
+            (root / "go.mod").write_text("toolchain go1.27.1\n", newline="\n")
             for name, text in {
                 "go": "#!/bin/sh\nprintf 'go1.27.1\\n'\n",
                 "make": "#!/bin/sh\nexit 0\n",
@@ -54,12 +72,11 @@ class WorkflowPolicyTests(unittest.TestCase):
             for core, interop, passes in ((0, 0, True), (0, 3, True), (1, 0, False),
                                           (2, 0, False), (3, 0, False), (0, 1, False),
                                           (0, 2, False), (0, 4, False)):
-                env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
-                           CORE_CODE=str(core), INTEROP_CODE=str(interop),
+                env = dict(os.environ, CORE_CODE=str(core), INTEROP_CODE=str(interop),
                            GITHUB_STEP_SUMMARY="summary")
-                result = subprocess.run(["bash", "-c", script], cwd=root, env=env,
+                result = subprocess.run([BASH, "-c", 'export PATH="$PWD:$PATH"\n' + script], cwd=root, env=env,
                                         capture_output=True, timeout=10)
-                self.assertEqual(result.returncode == 0, passes, (core, interop))
+                self.assertEqual(result.returncode == 0, passes, (core, interop, result.stderr))
 
     def test_issue_failure_notification_is_deduplicated(self):
         job = self.workflows["reference-notify"]["jobs"]["notify-failure"]
@@ -72,10 +89,9 @@ class WorkflowPolicyTests(unittest.TestCase):
                           "'run download') exit 1;;\n'label create') exit 0;;\n'issue create') printf 'created\\n' >> created;;\n"
                           "*) exit 91;;\nesac\n", newline="\n")
             gh.chmod(0o700)
-            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
-                       RUN_LINK="https://example.invalid/run", REFERENCE_RUN_ID="123")
+            env = dict(os.environ, RUN_LINK="https://example.invalid/run", REFERENCE_RUN_ID="123")
             for _ in range(2):
-                subprocess.run(["bash", "-c", script], cwd=root, env=env, check=True,
+                subprocess.run([BASH, "-c", 'export PATH="$PWD:$PATH"\n' + script], cwd=root, env=env, check=True,
                                capture_output=True, timeout=10)
             self.assertEqual((root / "created").read_text(), "created\n")
 
@@ -84,5 +100,5 @@ class WorkflowPolicyTests(unittest.TestCase):
             for job in workflow["jobs"].values():
                 for step in job.get("steps", []):
                     if "run" in step and (step.get("shell") == "bash" or job.get("runs-on") == "ubuntu-latest"):
-                        subprocess.run(["bash", "-n"], input=step["run"], text=True,
+                        subprocess.run([BASH, "-n"], input=step["run"].encode("utf-8"),
                                        check=True, capture_output=True)
