@@ -28,3 +28,20 @@ func TestAttemptLimitIsExactAndKeepsWinner(t *testing.T) {
 		t.Fatal("limit generated extra attempt/warning")
 	}
 }
+
+func TestAttemptBatchesDrainExactlyAcrossWorkers(t *testing.T) {
+	search := newSearcher(addressMatcher{}, &repeatingReader{pattern: goldenRandomInput(t)})
+	search.maxAttempts = 1031 // includes a partial final reservation
+	search.stopOnMatch = false
+	if err := search.run(context.Background(), 7, new(Identity)); !errors.Is(err, errAttemptLimit) {
+		t.Fatal(err)
+	}
+	if search.attempts.Load() != search.maxAttempts {
+		t.Fatalf("completed %d of %d attempts", search.attempts.Load(), search.maxAttempts)
+	}
+	search.maxAttempts = ^uint64(0)
+	search.reserved.Store(search.maxAttempts - 3)
+	if search.reserveAttempts(64) != 3 || search.reserveAttempts(64) != 0 {
+		t.Fatal("attempt reservation wrapped at uint64 limit")
+	}
+}

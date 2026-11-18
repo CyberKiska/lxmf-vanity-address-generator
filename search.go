@@ -17,7 +17,6 @@ type searcher struct {
 	maxAttempts   uint64
 	segmentLength int
 	reserved      atomic.Uint64
-	limited       atomic.Bool
 	matcher       addressMatcher
 	rng           io.Reader
 	stopOnMatch   bool
@@ -44,7 +43,6 @@ func (s *searcher) run(parent context.Context, workerCount int, result *Identity
 	}
 	s.attempts.Store(0)
 	s.reserved.Store(0)
-	s.limited.Store(false)
 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -55,11 +53,6 @@ func (s *searcher) run(parent context.Context, workerCount int, result *Identity
 	var found bool
 	var firstError error
 	publish := func(identity *Identity, err error) {
-		if errors.Is(err, errAttemptLimit) {
-			s.limited.Store(true)
-			cancel()
-			return
-		}
 		if err != nil {
 			errorOnce.Do(func() { firstError = err })
 			cancel()
@@ -70,8 +63,10 @@ func (s *searcher) run(parent context.Context, workerCount int, result *Identity
 	}
 	var workersDone sync.WaitGroup
 	workersDone.Add(workerCount)
+	// Share small budgets across workers and amortize reservations on long runs.
+	batchSize := max(uint64(1), min(uint64(64), s.maxAttempts/uint64(workerCount)))
 	for range workerCount {
-		go s.worker(ctx, &workersDone, publish)
+		go s.worker(ctx.Done(), batchSize, &workersDone, publish)
 	}
 	workersDone.Wait()
 	s.workerWarning = firstError
@@ -81,13 +76,13 @@ func (s *searcher) run(parent context.Context, workerCount int, result *Identity
 	if firstError != nil {
 		return firstError
 	}
-	if s.limited.Load() {
+	if s.maxAttempts != 0 && s.attempts.Load() == s.maxAttempts {
 		return errAttemptLimit
 	}
 	return parent.Err()
 }
 
-func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publish func(*Identity, error)) {
+func (s *searcher) worker(done <-chan struct{}, batchSize uint64, workersDone *sync.WaitGroup, publish func(*Identity, error)) {
 	defer workersDone.Done()
 
 	var localAttempts uint64
@@ -101,16 +96,23 @@ func (s *searcher) worker(ctx context.Context, workersDone *sync.WaitGroup, publ
 	defer wipeIdentitySecrets(&identity)
 
 	left := 0
+	var budget uint64
 	for {
 		select {
-		case <-ctx.Done():
+		case <-done:
 			return
 		default:
 		}
 
-		if !s.reserveAttempt() {
-			publish(nil, errAttemptLimit)
-			return
+		if s.maxAttempts != 0 {
+			if budget == 0 {
+				budget = s.reserveAttempts(batchSize)
+				if budget == 0 {
+					// Other workers can still have reserved candidates to finish.
+					return
+				}
+			}
+			budget--
 		}
 		if left == 0 {
 			if _, err := io.ReadFull(s.rng, randBuf[:]); err != nil {
@@ -154,17 +156,15 @@ func flushAttempts(localAttempts *uint64, totalAttempts *atomic.Uint64) {
 	*localAttempts = 0
 }
 
-func (s *searcher) reserveAttempt() bool {
-	if s.maxAttempts == 0 {
-		return true
-	}
+func (s *searcher) reserveAttempts(batchSize uint64) uint64 {
 	for {
 		n := s.reserved.Load()
 		if n >= s.maxAttempts {
-			return false
+			return 0
 		}
-		if s.reserved.CompareAndSwap(n, n+1) {
-			return true
+		count := min(batchSize, s.maxAttempts-n)
+		if s.reserved.CompareAndSwap(n, n+count) {
+			return count
 		}
 	}
 }

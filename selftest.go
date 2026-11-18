@@ -36,6 +36,10 @@ func knownAnswerIdentity() *Identity {
 }
 
 func selfTest(expected *Identity) error {
+	return selfTestWithTransform(expected, rederiveSigningHalf)
+}
+
+func selfTestWithTransform(expected *Identity, transform func(*Identity, *[64]byte, *[26]byte)) error {
 	var raw [identityPrivateKeySize]byte
 	for i := range raw {
 		raw[i] = byte(i)
@@ -51,32 +55,19 @@ func selfTest(expected *Identity) error {
 	if expected == nil || actual != *expected {
 		return fmt.Errorf("self-test failed: known-answer mismatch")
 	}
-	return selfTestSegmented(rederiveSigningHalf)
-}
-
-func selfTestSegmented(transform func(*Identity, *[64]byte, *[26]byte)) error {
-	var input [64]byte
-	for i := range input {
-		input[i] = byte(i)
-	}
-	var actual, expected Identity
-	var public [64]byte
-	material := newAddressHashMaterial()
-	defer wipeBytes(input[:])
-	defer wipeIdentitySecrets(&actual)
-	defer wipeIdentitySecrets(&expected)
-	if err := deriveCandidate(&actual, &input, &public, &material); err != nil {
-		return err
-	}
+	// Continue the already verified segment just as a worker would.
 	for i := 32; i < 64; i++ {
-		input[i] ^= 0xa5
+		raw[i] ^= 0xa5
 	}
-	copy(actual.Ed25519Seed[:], input[32:])
+	copy(actual.Ed25519Seed[:], raw[32:])
 	transform(&actual, &public, &material)
-	if err := deriveCandidate(&expected, &input, &public, &material); err != nil {
+	var independent Identity
+	defer wipeIdentitySecrets(&independent)
+	material = newAddressHashMaterial()
+	if err := deriveCandidate(&independent, &raw, &public, &material); err != nil {
 		return err
 	}
-	if actual != expected {
+	if actual != independent {
 		return fmt.Errorf("self-test failed: segmented derivation mismatch")
 	}
 	return nil
