@@ -30,7 +30,7 @@ unattested test builds. Read [SECURITY.md](SECURITY.md) before creating an ident
 
 Build and use from source:
 
-Go 1.27.2 is the release toolchain (`go.mod` requires at least 1.26.9, which contains the Windows `os.Root` fix GO-2026-6604).
+Release builds use Go 1.27.4. The minimum Go version is 1.26.11.
 
 Install from source with `go install github.com/CyberKiska/lxmf-vanity-address-generator@latest`.
 The resulting command is named `lxmf-vanity-address-generator`; local Makefile

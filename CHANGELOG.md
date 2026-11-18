@@ -46,6 +46,6 @@ All notable user-visible changes are recorded here.
 - Unsafe Unix directory ownership/write modes are refused. Private-file ownership/mode are checked before writing secrets and during read-back. An explicit portable override reports accepted weaknesses; Windows retains acknowledgement of unverified ACLs.
 - Secret aggregates use pointers and owned private buffers are cleared before final output, subject to Go/runtime and operating-system limits.
 - Best-effort Unix core-dump suppression and Linux dumpability reduction occur before handling private input.
-- Release toolchain moved to Go 1.27.2, and the minimum to Go 1.26.9, after the pinned scanner found reachable Windows `os.Root` advisory GO-2026-6604.
+- Release builds use Go 1.27.4 with a Go 1.26.11 minimum, including the November toolchain security updates and the Windows `os.Root` fix for GO-2026-6604.
 - Reference dependencies are hash-pinned; upstream code runs with read-only permissions and without privileged-job executable reuse.
 - The verifier reports upstream exception types without printing exception values that could contain private identity material.
