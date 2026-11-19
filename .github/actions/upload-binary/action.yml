@@ -1,0 +1,35 @@
+name: Scan and upload a release binary
+description: Publish the checked executable, checksum and build information as one platform bundle.
+inputs:
+  binary:
+    description: Name of the binary produced by make build-all
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      id: bundle
+      env:
+        BINARY: ${{ inputs.binary }}
+      run: |
+        set -euo pipefail
+        govulncheck -mode=binary "$BINARY"
+        sha256sum "$BINARY" > "$BINARY.sha256"
+        go version -m "$BINARY" > "$BINARY.build-info.txt"
+        git rev-parse HEAD >> "$BINARY.build-info.txt"
+        printf 'name=%s\n' "${BINARY%.exe}" >> "$GITHUB_OUTPUT"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      id: upload
+      with:
+        name: ${{ steps.bundle.outputs.name }}
+        if-no-files-found: error
+        path: |
+          ${{ inputs.binary }}
+          ${{ inputs.binary }}.sha256
+          ${{ inputs.binary }}.build-info.txt
+        retention-days: 60
+    - shell: bash
+      env:
+        BINARY: ${{ inputs.binary }}
+        ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+      run: printf '[Download %s](%s)\n\n' "$BINARY" "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"

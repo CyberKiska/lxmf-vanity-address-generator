@@ -1,0 +1,118 @@
+"""Parse workflows and execute gating logic with disposable command stubs."""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+def workflow_bash():
+    if os.name == "nt":
+        # Use Git for Windows' native MSYS Bash. An unqualified bash.exe can
+        # launch the System32 WSL shim with a different filesystem and PATH.
+        git = shutil.which("git")
+        if git:
+            result = subprocess.run([git, "--exec-path"], check=True, capture_output=True, text=True)
+            for parent in Path(result.stdout.strip()).parents:
+                bash = parent / "usr/bin/bash.exe"
+                if bash.is_file():
+                    return str(bash)
+        return None
+    return shutil.which("bash")
+
+
+BASH = workflow_bash()
+
+
+@unittest.skipUnless(shutil.which("ruby") and BASH, "workflow parsing requires Ruby's standard YAML library and Bash")
+class WorkflowPolicyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.workflows = {}
+        for name in ("build-binaries", "reference-compat", "reference-notify"):
+            path = Path(__file__).parent / ".github/workflows" / (name + ".yml")
+            result = subprocess.run(["ruby", "-rjson", "-ryaml", "-e",
+                                     "puts JSON.generate(YAML.load_file(ARGV[0]))", str(path)],
+                                    check=True, capture_output=True, text=True)
+            cls.workflows[name] = json.loads(result.stdout)
+
+    def test_privileged_jobs_do_not_execute_project_or_reference_code(self):
+        jobs = self.workflows["build-binaries"]["jobs"]
+        self.assertEqual(jobs["build"]["permissions"], {"contents": "read"})
+        self.assertTrue({"smoke", "compatibility"} <= set(jobs["attest"]["needs"]))
+        self.assertIn("attest", jobs["release"]["needs"])
+        for name in ("attest", "release"):
+            job = jobs[name]
+            self.assertIn("github.event_name == 'push'", job["if"])
+            for step in job["steps"]:
+                self.assertNotIn("checkout", step.get("uses", ""))
+                self.assertNotIn("go run", step.get("run", ""))
+                self.assertNotIn("python", step.get("run", ""))
+        issue = self.workflows["reference-notify"]["jobs"]["notify-failure"]
+        self.assertEqual(issue["permissions"], {"issues": "write", "actions": "read"})
+        self.assertIn("github.event.workflow_run.event == 'schedule'", issue["if"])
+        self.assertIn("head_repository.full_name == github.repository", issue["if"])
+
+    def test_every_release_binary_is_built_uploaded_executed_and_attested(self):
+        jobs = self.workflows["build-binaries"]["jobs"]
+        makefile = Path(__file__).with_name("Makefile").read_text()
+        targets = next(line.split(":=")[1].split() for line in makefile.splitlines()
+                       if line.startswith("TARGETS :="))
+        native = jobs["smoke"]["strategy"]["matrix"]["include"]
+        self.assertCountEqual(targets, [f"{m['goos']}/{m['goarch']}" for m in native])
+        self.assertEqual([m["goarch"] for m in native if m["goos"] == "darwin"], ["arm64"])
+        files = ["lxmf-vanity-" + t.replace("/", "-") + (".exe" if t.startswith("windows/") else "")
+                 for t in targets]
+        uploads = [s["with"]["binary"] for s in jobs["build"]["steps"]
+                   if s.get("uses") == "./.github/actions/upload-binary"]
+        self.assertCountEqual(files, uploads)
+        attestation = next(s for s in jobs["attest"]["steps"] if s.get("uses", "").startswith("actions/attest@"))
+        self.assertCountEqual(["artifacts/" + name for name in files],
+                              attestation["with"]["subject-path"].split())
+
+    def test_core_and_interop_gates_fail_closed(self):
+        steps = self.workflows["reference-compat"]["jobs"]["reference"]["steps"]
+        script = next(s["run"] for s in steps if s.get("name", "").startswith("Mandatory core"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".venv/bin").mkdir(parents=True)
+            reference = root / ".venv/bin/python"
+            reference.write_text("#!/bin/sh\ncase \"$*\" in *'--checks core'*) exit \"$CORE_CODE\";; "
+                                 "*) exit \"$INTEROP_CODE\";; esac\n", newline="\n")
+            reference.chmod(0o700)
+            for core, interop, passes in ((0, 0, True), (0, 3, True), (1, 0, False),
+                                          (2, 0, False), (3, 0, False), (0, 1, False),
+                                          (0, 2, False), (0, 4, False)):
+                env = dict(os.environ, CORE_CODE=str(core), INTEROP_CODE=str(interop),
+                           GITHUB_STEP_SUMMARY="summary")
+                result = subprocess.run([BASH, "-c", 'export PATH="$PWD:$PATH"\n' + script], cwd=root, env=env,
+                                        capture_output=True, timeout=10)
+                self.assertEqual(result.returncode == 0, passes, (core, interop, result.stderr))
+
+    def test_issue_failure_notification_is_deduplicated(self):
+        job = self.workflows["reference-notify"]["jobs"]["notify-failure"]
+        script = job["steps"][0]["run"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gh = root / "gh"
+            gh.write_text("#!/bin/sh\ncase \"$1 $2\" in\n"
+                          "'issue list') if [ -f created ]; then printf '1\\n'; else printf '0\\n'; fi;;\n"
+                          "'run download') exit 1;;\n'label create') exit 0;;\n'issue create') printf 'created\\n' >> created;;\n"
+                          "*) exit 91;;\nesac\n", newline="\n")
+            gh.chmod(0o700)
+            env = dict(os.environ, RUN_LINK="https://example.invalid/run", REFERENCE_RUN_ID="123")
+            for _ in range(2):
+                subprocess.run([BASH, "-c", 'export PATH="$PWD:$PATH"\n' + script], cwd=root, env=env, check=True,
+                               capture_output=True, timeout=10)
+            self.assertEqual((root / "created").read_text(), "created\n")
+
+    def test_all_inline_bash_is_syntactically_valid(self):
+        for workflow in self.workflows.values():
+            for job in workflow["jobs"].values():
+                for step in job.get("steps", []):
+                    if "run" in step and (step.get("shell") == "bash" or job.get("runs-on") == "ubuntu-latest"):
+                        subprocess.run([BASH, "-n"], input=step["run"].encode("utf-8"),
+                                       check=True, capture_output=True)

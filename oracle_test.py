@@ -1,11 +1,18 @@
 """Regression checks for the reference CLI invocation; no RNS install needed."""
 
+import subprocess
 import unittest
+from unittest.mock import patch
 
 from scripts.rns_compatibility_oracle import check_rnid_import
 
 
 class RnidInvocationTests(unittest.TestCase):
+    def test_export_is_absent_from_os_process_arguments(self):
+        with patch("subprocess.run", wraps=subprocess.run) as run:
+            check_rnid_import("print('public-address')", "private-sentinel", "public-address", "-B")
+        self.assertFalse(any("private-sentinel" in arg for arg in run.call_args.args[0]))
+
     def test_leading_hyphen_export_is_an_option_value(self):
         # Exercise an actual subprocess and argparse, the parser rnid uses.
         bootstrap = """
@@ -37,3 +44,42 @@ print('expected-public-address')
 
 if __name__ == "__main__":
     unittest.main()
+
+class OracleFailureClasses(unittest.TestCase):
+    def test_failure_classes_do_not_waive_unexpected_errors(self):
+        from scripts.rns_compatibility_oracle import failure_code, APIDrift, IncompleteEnvironment
+        import subprocess
+        for exc, expected in (
+            (ValueError("tested mismatch"), 1),
+            (RuntimeError("private-sentinel"), 1),
+            (AttributeError("unexpected API failure"), 1),
+            (ImportError("unexpected import"), 1),
+            (IncompleteEnvironment("missing RNS"), 2),
+            (APIDrift("recognised option change"), 3),
+            (subprocess.CalledProcessError(2, ["rnid", "private-sentinel"]), 1),
+        ):
+            code, message = failure_code(exc)
+            self.assertEqual(code, expected)
+            self.assertNotIn("private-sentinel", message)
+
+    def test_only_recognised_rnid_option_drift_is_optional(self):
+        from scripts.rns_compatibility_oracle import APIDrift
+        bootstrap = "import sys; print('unrecognized arguments: -N -H lxmf.delivery', file=sys.stderr); raise SystemExit(2)"
+        with self.assertRaises(APIDrift):
+            check_rnid_import(bootstrap, "private-sentinel", "public-address", "-b")
+        with self.assertRaises(ValueError):
+            check_rnid_import("raise SystemExit(2)", "private-sentinel", "public-address", "-b")
+
+    def test_lxmf_checks_actual_aspect_and_app_name(self):
+        from scripts.rns_compatibility_oracle import check_lxmf_delivery
+        from types import SimpleNamespace
+        class Router:
+            def register_delivery_identity(self, identity):
+                return SimpleNamespace(hash=b"changed-aspect")
+        rns = SimpleNamespace(Transport=SimpleNamespace(register_destination=lambda: None))
+        lxmf = SimpleNamespace(APP_NAME="lxmf", LXMRouter=Router)
+        with self.assertRaisesRegex(ValueError, "delivery address mismatch"):
+            check_lxmf_delivery(rns, lxmf, None, b"expected-delivery")
+        lxmf.APP_NAME = "changed-app"
+        with self.assertRaisesRegex(ValueError, "app name mismatch"):
+            check_lxmf_delivery(rns, lxmf, None, b"expected-delivery")
