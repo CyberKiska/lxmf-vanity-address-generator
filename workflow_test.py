@@ -42,9 +42,10 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_privileged_jobs_do_not_execute_project_or_reference_code(self):
         jobs = self.workflows["build-binaries"]["jobs"]
         self.assertEqual(jobs["build"]["permissions"], {"contents": "read"})
+        self.assertTrue({"smoke", "compatibility"} <= set(jobs["attest"]["needs"]))
+        self.assertIn("attest", jobs["release"]["needs"])
         for name in ("attest", "release"):
             job = jobs[name]
-            self.assertIn("smoke", job["needs"])
             self.assertIn("github.event_name == 'push'", job["if"])
             for step in job["steps"]:
                 self.assertNotIn("checkout", step.get("uses", ""))
@@ -55,20 +56,33 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("github.event.workflow_run.event == 'schedule'", issue["if"])
         self.assertIn("head_repository.full_name == github.repository", issue["if"])
 
+    def test_every_release_binary_is_built_uploaded_executed_and_attested(self):
+        jobs = self.workflows["build-binaries"]["jobs"]
+        makefile = Path(__file__).with_name("Makefile").read_text()
+        targets = next(line.split(":=")[1].split() for line in makefile.splitlines()
+                       if line.startswith("TARGETS :="))
+        native = jobs["smoke"]["strategy"]["matrix"]["include"]
+        self.assertCountEqual(targets, [f"{m['goos']}/{m['goarch']}" for m in native])
+        self.assertEqual([m["goarch"] for m in native if m["goos"] == "darwin"], ["arm64"])
+        files = ["lxmf-vanity-" + t.replace("/", "-") + (".exe" if t.startswith("windows/") else "")
+                 for t in targets]
+        uploads = [s["with"]["binary"] for s in jobs["build"]["steps"]
+                   if s.get("uses") == "./.github/actions/upload-binary"]
+        self.assertCountEqual(files, uploads)
+        attestation = next(s for s in jobs["attest"]["steps"] if s.get("uses", "").startswith("actions/attest@"))
+        self.assertCountEqual(["artifacts/" + name for name in files],
+                              attestation["with"]["subject-path"].split())
+
     def test_core_and_interop_gates_fail_closed(self):
         steps = self.workflows["reference-compat"]["jobs"]["reference"]["steps"]
         script = next(s["run"] for s in steps if s.get("name", "").startswith("Mandatory core"))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / ".venv/bin").mkdir(parents=True)
-            (root / "go.mod").write_text("toolchain go1.27.1\n", newline="\n")
-            for name, text in {
-                "go": "#!/bin/sh\nprintf 'go1.27.1\\n'\n",
-                "make": "#!/bin/sh\nexit 0\n",
-                ".venv/bin/python": "#!/bin/sh\ncase \"$*\" in *'--checks core'*) exit \"$CORE_CODE\";; *) exit \"$INTEROP_CODE\";; esac\n",
-            }.items():
-                (root / name).write_text(text, newline="\n")
-                (root / name).chmod(0o700)
+            reference = root / ".venv/bin/python"
+            reference.write_text("#!/bin/sh\ncase \"$*\" in *'--checks core'*) exit \"$CORE_CODE\";; "
+                                 "*) exit \"$INTEROP_CODE\";; esac\n", newline="\n")
+            reference.chmod(0o700)
             for core, interop, passes in ((0, 0, True), (0, 3, True), (1, 0, False),
                                           (2, 0, False), (3, 0, False), (0, 1, False),
                                           (0, 2, False), (0, 4, False)):

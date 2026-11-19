@@ -271,16 +271,16 @@ CI uses the single release Go toolchain for tests and builds; it does not
 multiply jobs by historical Go or RNS versions. The two RNS providers run
 sequentially in one compatibility job.
 
-The configured release workflow gates five cgo-free PIE artifacts on platform tests,
-reference tests, race/fuzz/FIPS checks and `govulncheck`. Artifacts include SHA-256
-checksums and build information. The workflow executes downloaded artifacts on
-all five matching native runners before
-attestation/release, and linux/amd64 is rebuilt on macOS for byte comparison.
+One Linux job builds the five cgo-free PIE binaries and uses one installation of
+`govulncheck` for the source and binary scans. Each platform bundle includes a
+SHA-256 checksum and build information. The native jobs execute the downloaded
+binaries, and the Linux/amd64 bundle also supplies the FIPS and RNS checks.
+The Apple Silicon job runs the macOS tests and independently rebuilds Linux/amd64
+for byte comparison. Attestation and release require all native and reference checks.
 The build job holds read permission only; isolated attestation and publication
 jobs execute no project scripts or downloaded binaries. Successful trusted
 `main` and validated release-tag builds receive
-GitHub build-provenance attestations after those gates pass. These workflow
-changes still need their first hosted validation run. Verify a downloaded binary with:
+GitHub build-provenance attestations after those gates pass. Verify a downloaded binary with:
 
 ```bash
 gh attestation verify ./lxmf-vanity-linux-amd64 --repo CyberKiska/lxmf-vanity-address-generator

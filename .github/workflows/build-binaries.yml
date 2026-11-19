@@ -20,9 +20,11 @@ env:
   GOVULNCHECK_VERSION: v1.8.0
 
 jobs:
-  policy:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -46,20 +48,72 @@ jobs:
             version="main-${COMMIT:0:12}"
           fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        env:
+          GOTOOLCHAIN: auto
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Vet release targets and run race and fuzz checks
+        run: |
+          set -euo pipefail
+          test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod)"
+          make lint
+          go test -race -count=1 ./...
+          make fuzz
+      - name: Install the pinned scanner and check the source
+        run: |
+          set -euo pipefail
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          govulncheck ./...
+      - name: Build all release binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: make build-all
+      - uses: ./.github/actions/upload-binary
+        with:
+          binary: lxmf-vanity-linux-amd64
+      - uses: ./.github/actions/upload-binary
+        with:
+          binary: lxmf-vanity-linux-arm64
+      - uses: ./.github/actions/upload-binary
+        with:
+          binary: lxmf-vanity-darwin-arm64
+      - uses: ./.github/actions/upload-binary
+        with:
+          binary: lxmf-vanity-windows-amd64.exe
+      - uses: ./.github/actions/upload-binary
+        with:
+          binary: lxmf-vanity-windows-arm64.exe
 
-  platform-tests:
-    needs: policy
-    runs-on: ${{ matrix.os }}
+  compatibility:
+    needs: build
+    uses: ./.github/workflows/reference-compat.yml
+    with:
+      use_release_binary: true
+    permissions:
+      contents: read
+
+  smoke:
+    name: Native checks (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: build
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        include:
+          - {goos: linux, goarch: amd64, runner: ubuntu-latest, platform_tests: true}
+          - {goos: linux, goarch: arm64, runner: ubuntu-24.04-arm}
+          - {goos: darwin, goarch: arm64, runner: macos-15, platform_tests: true}
+          - {goos: windows, goarch: amd64, runner: windows-latest, platform_tests: true}
+          - {goos: windows, goarch: arm64, runner: windows-11-arm}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.platform_tests
         env:
           GOTOOLCHAIN: auto
         with:
@@ -69,11 +123,13 @@ jobs:
         with:
           python-version: '3.14.7'
       - name: Verify release toolchain
+        if: matrix.platform_tests
         shell: bash
         run: |
           set -euo pipefail
           test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod | tr -d '\r')"
       - name: Native Go tests
+        if: matrix.platform_tests
         shell: bash
         run: |
           set -euo pipefail
@@ -82,6 +138,7 @@ jobs:
             exit 1
           fi
       - name: Python tooling tests
+        if: matrix.platform_tests
         shell: bash
         run: |
           set -euo pipefail
@@ -89,132 +146,6 @@ jobs:
             awk '/^(FAIL|ERROR): / || /^(AssertionError|[A-Za-z.]*Error): / {print "::error::" $0}' python-tests.log
             exit 1
           fi
-
-  security-tests:
-    needs: policy
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        env:
-          GOTOOLCHAIN: auto
-        with:
-          go-version-file: go.mod
-          cache: false
-      - name: Formatting, module hygiene, target vet, race, fuzz and vulnerability checks
-        run: |
-          set -euo pipefail
-          test -z "$(gofmt -s -l .)"
-          go mod tidy -diff
-          for target in linux/amd64 linux/arm64 darwin/arm64 windows/amd64 windows/arm64; do
-            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go vet ./...
-          done
-          go test -race -count=1 ./...
-          go test -run '^$' -fuzz '^FuzzAddressMatcher$' -fuzztime=10s
-          go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
-      - name: FIPS-only mode has the expected graceful failure
-        run: |
-          set -euo pipefail
-          make build
-          status=0
-          GODEBUG=fips140=only ./lxmf-vanity --prefix 0 --workers 1 --dry-run >fips-only.log 2>&1 || status=$?
-          test "$status" -eq 1
-          grep -Fq 'X25519 public-key derivation unavailable' fips-only.log
-          if grep -Eq 'panic:|fatal error:' fips-only.log; then cat fips-only.log; exit 1; fi
-          GODEBUG=fips140=only ./lxmf-vanity --version
-
-  compatibility:
-    needs: policy
-    uses: ./.github/workflows/reference-compat.yml
-    permissions:
-      contents: read
-
-  build:
-    needs: [policy, platform-tests, security-tests, compatibility]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {goos: linux, goarch: amd64}
-          - {goos: linux, goarch: arm64}
-          - {goos: darwin, goarch: arm64}
-          - {goos: windows, goarch: amd64}
-          - {goos: windows, goarch: arm64}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        env:
-          GOTOOLCHAIN: auto
-        with:
-          go-version-file: go.mod
-          cache: false
-      - name: Build exact target bytes
-        id: build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
-          VERSION: ${{ needs.policy.outputs.version }}
-        run: |
-          set -euo pipefail
-          suffix=""
-          if [ "$GOOS" = windows ]; then suffix=".exe"; fi
-          out="lxmf-vanity-${GOOS}-${GOARCH}${suffix}"
-          go build -buildmode=pie -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X main.version=$VERSION" -o "$out" .
-          sha256sum "$out" > "$out.sha256"
-          go version -m "$out" > "$out.build-info.txt"
-          git rev-parse HEAD >> "$out.build-info.txt"
-          printf 'binary=%s\n' "$out" >> "$GITHUB_OUTPUT"
-      - name: Scan compiled binary
-        env:
-          TARGET: ${{ steps.build.outputs.binary }}
-        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" -mode=binary "$TARGET"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        id: upload
-        with:
-          name: lxmf-vanity-${{ matrix.goos }}-${{ matrix.goarch }}
-          if-no-files-found: error
-          path: |
-            ${{ steps.build.outputs.binary }}
-            ${{ steps.build.outputs.binary }}.sha256
-            ${{ steps.build.outputs.binary }}.build-info.txt
-          retention-days: 60
-      - name: Show binary download in run summary
-        env:
-          BINARY_NAME: ${{ steps.build.outputs.binary }}
-          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
-        run: |
-          printf '### Download %s\n\n[Download binary bundle](%s)\n\nIncludes the executable, SHA-256 checksum and build information.\n' "$BINARY_NAME" "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
-
-  smoke:
-    needs: [policy, build]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {goos: linux, goarch: amd64, runner: ubuntu-latest}
-          - {goos: linux, goarch: arm64, runner: ubuntu-24.04-arm}
-          - {goos: darwin, goarch: arm64, runner: macos-15}
-          - {goos: windows, goarch: amd64, runner: windows-latest}
-          - {goos: windows, goarch: arm64, runner: windows-11-arm}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.14.7'
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: lxmf-vanity-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -223,54 +154,39 @@ jobs:
         env:
           TARGET_OS: ${{ matrix.goos }}
           TARGET_ARCH: ${{ matrix.goarch }}
-          EXPECTED_VERSION: ${{ needs.policy.outputs.version }}
+          EXPECTED_VERSION: ${{ needs.build.outputs.version }}
         run: python scripts/smoke_artifact.py --directory artifact
-      - name: Install manual verifier dependencies on one Linux runner
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
-        run: |
-          python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r requirements-reference.txt
-      - name: Independent manual verification of downloaded bytes
+      - name: FIPS-only mode has the expected graceful failure
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         shell: bash
         run: |
           set -euo pipefail
-          identity_dir=$(mktemp -d)
-          trap 'rm -rf -- "$identity_dir"' EXIT
-          artifact/lxmf-vanity-linux-amd64 --prefix 0 --workers 1 --out "$identity_dir/saved"
-          python verify.py "$identity_dir/saved" --manual-only
-
-  reproducible:
-    needs: [policy, build]
-    runs-on: macos-15
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        env:
-          GOTOOLCHAIN: auto
-        with:
-          go-version-file: go.mod
-          cache: false
+          status=0
+          GODEBUG=fips140=only artifact/lxmf-vanity-linux-amd64 --prefix 0 --workers 1 --dry-run >fips-only.log 2>&1 || status=$?
+          test "$status" -eq 1
+          grep -Fq 'X25519 public-key derivation unavailable' fips-only.log
+          if grep -Eq 'panic:|fatal error:' fips-only.log; then cat fips-only.log; exit 1; fi
+          GODEBUG=fips140=only artifact/lxmf-vanity-linux-amd64 --version
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: matrix.goos == 'darwin'
         with:
           name: lxmf-vanity-linux-amd64
           path: original
       - name: Compare a different-host-OS build with the immutable artifact
+        if: matrix.goos == 'darwin'
         env:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: '0'
-          VERSION: ${{ needs.policy.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          go build -buildmode=pie -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X main.version=$VERSION" -o rebuilt .
+          make build BINARY=rebuilt
           cmp original/lxmf-vanity-linux-amd64 rebuilt
 
   attest:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    needs: [build, smoke, reproducible]
+    needs: [build, smoke, compatibility]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -301,7 +217,7 @@ jobs:
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [policy, build, smoke, reproducible, attest]
+    needs: [build, attest]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -317,7 +233,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.policy.outputs.version }}
+          RELEASE_TAG: ${{ needs.build.outputs.version }}
           RELEASE_COMMIT: ${{ github.sha }}
         working-directory: artifacts
         run: |

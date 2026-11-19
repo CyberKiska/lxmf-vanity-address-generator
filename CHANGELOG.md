@@ -24,6 +24,7 @@ All notable user-visible changes are recorded here.
 - Progress and notices use stderr; stdout contains only the final public result.
 - Public sidecars disclose only a quoted basename. The verifier explicitly reports absent/skipped metadata and gives remediation for legacy unlabelled private exports.
 - CI selects its toolchain from `go.mod`, checks all five target vets and module hygiene, and runs Python tests on Linux/macOS/Windows.
+- One build job compiles the five binaries and installs the vulnerability scanner once. Native smoke, FIPS and reference checks use those artifacts. The Apple Silicon job also checks cross-host reproducibility.
 - Verification dependencies updated to cryptography 50.0.2 and pycparser 3.11 with wheel hashes; artifact uploads use the pinned 7.0.2 action.
 
 ### Fixed
