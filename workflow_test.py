@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 
@@ -32,7 +33,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.workflows = {}
-        for name in ("build-binaries", "reference-compat", "reference-notify"):
+        for name in ("build-binaries", "reference-compat", "reference-notify", "rust"):
             path = Path(__file__).parent / ".github/workflows" / (name + ".yml")
             result = subprocess.run(["ruby", "-rjson", "-ryaml", "-e",
                                      "puts JSON.generate(YAML.load_file(ARGV[0]))", str(path)],
@@ -72,6 +73,27 @@ class WorkflowPolicyTests(unittest.TestCase):
         attestation = next(s for s in jobs["attest"]["steps"] if s.get("uses", "").startswith("actions/attest@"))
         self.assertCountEqual(["artifacts/" + name for name in files],
                               attestation["with"]["subject-path"].split())
+
+    def test_rust_workflow_is_read_only_pinned_and_runs_on_every_native_runner(self):
+        workflow = self.workflows["rust"]
+        job = workflow["jobs"]["check"]
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        # Ruby's YAML reads the key `on` as the boolean true.
+        self.assertEqual(set(workflow.get("on") or workflow["true"]), {"push", "pull_request"})
+        native = {m["runner"] for m in self.workflows["build-binaries"]["jobs"]["smoke"]["strategy"]["matrix"]["include"]}
+        self.assertEqual(set(job["strategy"]["matrix"]["runner"]), native)
+        for step in job["steps"]:
+            self.assertRegex(step.get("uses", "x/y@" + "0" * 40), r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$")
+            self.assertNotIn("cache", step.get("uses", "") + str(step.get("with", {})))
+        self.assertNotIn("secrets.", (Path(__file__).parent / ".github/workflows/rust.yml").read_text())
+        channel = tomllib.loads((Path(__file__).parent / "rust/rust-toolchain.toml").read_text())["toolchain"]["channel"]
+        self.assertEqual(workflow["env"]["RUSTUP_TOOLCHAIN"], channel)
+        commands = "\n".join(step.get("run", "") for step in job["steps"])
+        for required in ("rustup toolchain install", "cargo fmt --all --check",
+                         "cargo clippy --workspace --all-targets --locked -- -D warnings",
+                         "cargo test --workspace --locked", "scripts/check_rust_deps.py",
+                         "-m unittest check_rust_deps_test"):
+            self.assertIn(required, commands)
 
     def test_core_and_interop_gates_fail_closed(self):
         steps = self.workflows["reference-compat"]["jobs"]["reference"]["steps"]
