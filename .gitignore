@@ -41,3 +41,6 @@ IMPLEMENTATION_PLAN.md
 TECHNICAL.md
 PERFORMANCE.md
 VALIDATION.md
+
+# Rust build output
+rust/target/
