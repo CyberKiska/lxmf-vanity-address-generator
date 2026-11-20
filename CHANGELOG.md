@@ -2,7 +2,7 @@
 
 All notable user-visible changes are recorded here.
 
-## Unreleased
+## v1.0.0 (unreleased draft)
 
 ### Added
 
