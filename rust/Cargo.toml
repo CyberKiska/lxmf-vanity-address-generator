@@ -1,0 +1,69 @@
+[workspace]
+resolver = "3"
+members = ["core", "cli", "platform"]
+
+[workspace.package]
+version = "2.0.0-dev"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+license-file = "../LICENSE"
+
+# Exact versions: the newest non-yanked release on 2026-11-20. Cargo.lock is
+# committed and never updated by agents. Dependencies are limited to this
+# table; scripts/check_rust_deps.py checks the resolved graph against
+# dependency-allowlist.json.
+[workspace.dependencies]
+lxmf-vanity-core = { path = "core" }
+lxmf-vanity-platform = { path = "platform" }
+x25519-dalek = { version = "=3.0.0", default-features = false, features = ["static_secrets", "zeroize", "precomputed-tables"] }
+ed25519-dalek = { version = "=3.0.0" }
+sha2 = { version = "=0.11.1" }
+getrandom = { version = "=0.4.3" }
+subtle = { version = "=2.6.1" }
+zeroize = { version = "=1.9.2" }
+rustix = { version = "=1.1.6", features = ["fs", "process"] }
+signal-hook = { version = "=0.4.6" }
+windows-sys = { version = "=0.61.2", default-features = false }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+# The skeleton crates declare their approved dependencies before any code uses
+# them. Remove this (or set "warn") once every dependency is in use.
+[workspace.lints.cargo]
+unused_dependencies = "allow"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+exit = "deny"
+mem_forget = "deny"
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = "symbols"
+overflow-checks = true
+incremental = false
+
+# Dependencies keep the default (no overflow checks); our crates check.
+[profile.release.package."*"]
+overflow-checks = false
+
+# For profiling (symbols kept); otherwise identical to release.
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false

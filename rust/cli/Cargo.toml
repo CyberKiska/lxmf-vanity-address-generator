@@ -1,0 +1,22 @@
+[package]
+name = "lxmf-vanity-cli"
+description = "Command-line interface of lxmf-vanity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[[bin]]
+name = "lxmf-vanity"
+path = "src/main.rs"
+
+[dependencies]
+lxmf-vanity-core.workspace = true
+lxmf-vanity-platform.workspace = true
+getrandom.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+
+[lints]
+workspace = true

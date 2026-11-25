@@ -1,0 +1,54 @@
+name: Rust
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Must equal the channel in rust/rust-toolchain.toml (workflow_test.py checks it).
+  RUSTUP_TOOLCHAIN: 1.100.0
+
+jobs:
+  check:
+    name: Rust checks (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-15, windows-latest, windows-11-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.7'
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy --no-self-update
+          rustc -Vv
+          cargo -V
+      - name: Check formatting
+        shell: bash
+        working-directory: rust
+        run: cargo fmt --all --check
+      - name: Lint with Clippy
+        shell: bash
+        working-directory: rust
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run Rust tests
+        shell: bash
+        working-directory: rust
+        run: cargo test --workspace --locked
+      - name: Check the dependency allowlist
+        shell: bash
+        run: python scripts/check_rust_deps.py
+      - name: Test the dependency guard
+        shell: bash
+        run: python -m unittest check_rust_deps_test

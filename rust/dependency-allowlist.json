@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "members": {
+    "lxmf-vanity-core": [
+      "ed25519-dalek",
+      "sha2",
+      "subtle",
+      "x25519-dalek",
+      "zeroize"
+    ],
+    "lxmf-vanity-cli": [
+      "getrandom",
+      "lxmf-vanity-core",
+      "lxmf-vanity-platform",
+      "subtle",
+      "zeroize"
+    ],
+    "lxmf-vanity-platform": [
+      "rustix",
+      "signal-hook",
+      "windows-sys"
+    ]
+  },
+  "build_time_code": {
+    "curve25519-dalek 5.0.0": {
+      "kinds": [
+        "build-script"
+      ],
+      "build_time_code_reviewed": true
+    },
+    "curve25519-dalek-derive 0.1.1": {
+      "kinds": [
+        "proc-macro"
+      ],
+      "build_time_code_reviewed": true
+    },
+    "getrandom 0.4.3": {
+      "kinds": [
+        "build-script"
+      ],
+      "build_time_code_reviewed": true
+    },
+    "libc 0.2.191": {
+      "kinds": [
+        "build-script"
+      ],
+      "build_time_code_reviewed": true
+    },
+    "proc-macro2 1.0.107": {
+      "kinds": [
+        "build-script"
+      ],
+      "build_time_code_reviewed": true
+    },
+    "quote 1.0.47": {
+      "kinds": [
+        "build-script"
+      ],
+      "build_time_code_reviewed": true
+    },
+    "rustix 1.1.6": {
+      "kinds": [
+        "build-script"
+      ],
+      "build_time_code_reviewed": true
+    },
+    "signal-hook 0.4.6": {
+      "kinds": [
+        "build-script"
+      ],
+      "build_time_code_reviewed": true
+    }
+  },
+  "targets": {
+    "x86_64-unknown-linux-musl": {
+      "bitflags 2.13.2": "std",
+      "block-buffer 0.12.1": "",
+      "cfg-if 1.0.5": "",
+      "const-oid 0.10.3": "",
+      "cpufeatures 0.3.1": "",
+      "crypto-common 0.2.2": "",
+      "curve25519-dalek 5.0.0": "digest,precomputed-tables,zeroize",
+      "curve25519-dalek-derive 0.1.1": "",
+      "digest 0.11.3": "alloc,block-api,default,oid",
+      "ed25519 3.0.0": "",
+      "ed25519-dalek 3.0.0": "default,fast,zeroize",
+      "errno 0.3.15": "default,std",
+      "getrandom 0.4.3": "",
+      "hybrid-array 0.4.15": "",
+      "libc 0.2.191": "default,std",
+      "linux-raw-sys 0.12.1": "auxvec,elf,errno,general,ioctl,no_std,prctl",
+      "proc-macro2 1.0.107": "default,proc-macro",
+      "quote 1.0.47": "default,proc-macro",
+      "rand_core 0.10.1": "",
+      "rustc_version 0.4.1": "",
+      "rustix 1.1.6": "alloc,default,fs,process,std",
+      "semver 1.0.28": "default,std",
+      "sha2 0.11.1": "alloc,default,oid",
+      "signal-hook 0.4.6": "channel,default,iterator",
+      "signal-hook-registry 1.4.8": "",
+      "signature 3.0.0": "",
+      "subtle 2.6.1": "const-generics,default,i128,std",
+      "syn 2.0.119": "clone-impls,default,derive,full,parsing,printing,proc-macro",
+      "typenum 1.20.1": "const-generics",
+      "unicode-ident 1.0.27": "",
+      "x25519-dalek 3.0.0": "precomputed-tables,static_secrets,zeroize",
+      "zeroize 1.9.2": "alloc,default"
+    },
+    "aarch64-unknown-linux-musl": {
+      "bitflags 2.13.2": "std",
+      "block-buffer 0.12.1": "",
+      "cfg-if 1.0.5": "",
+      "const-oid 0.10.3": "",
+      "cpufeatures 0.3.1": "",
+      "crypto-common 0.2.2": "",
+      "curve25519-dalek 5.0.0": "digest,precomputed-tables,zeroize",
+      "digest 0.11.3": "alloc,block-api,default,oid",
+      "ed25519 3.0.0": "",
+      "ed25519-dalek 3.0.0": "default,fast,zeroize",
+      "errno 0.3.15": "default,std",
+      "getrandom 0.4.3": "",
+      "hybrid-array 0.4.15": "",
+      "libc 0.2.191": "default,std",
+      "linux-raw-sys 0.12.1": "auxvec,elf,errno,general,ioctl,no_std,prctl",
+      "rand_core 0.10.1": "",
+      "rustc_version 0.4.1": "",
+      "rustix 1.1.6": "alloc,default,fs,process,std",
+      "semver 1.0.28": "default,std",
+      "sha2 0.11.1": "alloc,default,oid",
+      "signal-hook 0.4.6": "channel,default,iterator",
+      "signal-hook-registry 1.4.8": "",
+      "signature 3.0.0": "",
+      "subtle 2.6.1": "const-generics,default,i128,std",
+      "typenum 1.20.1": "const-generics",
+      "x25519-dalek 3.0.0": "precomputed-tables,static_secrets,zeroize",
+      "zeroize 1.9.2": "alloc,default"
+    },
+    "aarch64-apple-darwin": {
+      "bitflags 2.13.2": "std",
+      "block-buffer 0.12.1": "",
+      "cfg-if 1.0.5": "",
+      "const-oid 0.10.3": "",
+      "cpufeatures 0.3.1": "",
+      "crypto-common 0.2.2": "",
+      "curve25519-dalek 5.0.0": "digest,precomputed-tables,zeroize",
+      "digest 0.11.3": "alloc,block-api,default,oid",
+      "ed25519 3.0.0": "",
+      "ed25519-dalek 3.0.0": "default,fast,zeroize",
+      "errno 0.3.15": "default,std",
+      "getrandom 0.4.3": "",
+      "hybrid-array 0.4.15": "",
+      "libc 0.2.191": "default,std",
+      "rand_core 0.10.1": "",
+      "rustc_version 0.4.1": "",
+      "rustix 1.1.6": "alloc,default,fs,process,std",
+      "semver 1.0.28": "default,std",
+      "sha2 0.11.1": "alloc,default,oid",
+      "signal-hook 0.4.6": "channel,default,iterator",
+      "signal-hook-registry 1.4.8": "",
+      "signature 3.0.0": "",
+      "subtle 2.6.1": "const-generics,default,i128,std",
+      "typenum 1.20.1": "const-generics",
+      "x25519-dalek 3.0.0": "precomputed-tables,static_secrets,zeroize",
+      "zeroize 1.9.2": "alloc,default"
+    },
+    "x86_64-pc-windows-msvc": {
+      "block-buffer 0.12.1": "",
+      "cfg-if 1.0.5": "",
+      "const-oid 0.10.3": "",
+      "cpufeatures 0.3.1": "",
+      "crypto-common 0.2.2": "",
+      "curve25519-dalek 5.0.0": "digest,precomputed-tables,zeroize",
+      "curve25519-dalek-derive 0.1.1": "",
+      "digest 0.11.3": "alloc,block-api,default,oid",
+      "ed25519 3.0.0": "",
+      "ed25519-dalek 3.0.0": "default,fast,zeroize",
+      "getrandom 0.4.3": "",
+      "hybrid-array 0.4.15": "",
+      "proc-macro2 1.0.107": "default,proc-macro",
+      "quote 1.0.47": "default,proc-macro",
+      "rand_core 0.10.1": "",
+      "rustc_version 0.4.1": "",
+      "semver 1.0.28": "default,std",
+      "sha2 0.11.1": "alloc,default,oid",
+      "signature 3.0.0": "",
+      "subtle 2.6.1": "const-generics,default,i128,std",
+      "syn 2.0.119": "clone-impls,default,derive,full,parsing,printing,proc-macro",
+      "typenum 1.20.1": "const-generics",
+      "unicode-ident 1.0.27": "",
+      "windows-link 0.2.1": "",
+      "windows-sys 0.61.2": "Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_System,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,default",
+      "x25519-dalek 3.0.0": "precomputed-tables,static_secrets,zeroize",
+      "zeroize 1.9.2": "alloc,default"
+    },
+    "aarch64-pc-windows-msvc": {
+      "block-buffer 0.12.1": "",
+      "cfg-if 1.0.5": "",
+      "const-oid 0.10.3": "",
+      "cpufeatures 0.3.1": "",
+      "crypto-common 0.2.2": "",
+      "curve25519-dalek 5.0.0": "digest,precomputed-tables,zeroize",
+      "digest 0.11.3": "alloc,block-api,default,oid",
+      "ed25519 3.0.0": "",
+      "ed25519-dalek 3.0.0": "default,fast,zeroize",
+      "getrandom 0.4.3": "",
+      "hybrid-array 0.4.15": "",
+      "rand_core 0.10.1": "",
+      "rustc_version 0.4.1": "",
+      "semver 1.0.28": "default,std",
+      "sha2 0.11.1": "alloc,default,oid",
+      "signature 3.0.0": "",
+      "subtle 2.6.1": "const-generics,default,i128,std",
+      "typenum 1.20.1": "const-generics",
+      "windows-link 0.2.1": "",
+      "windows-sys 0.61.2": "Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_System,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,default",
+      "x25519-dalek 3.0.0": "precomputed-tables,static_secrets,zeroize",
+      "zeroize 1.9.2": "alloc,default"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "lxmf-vanity-core"
+description = "Identity derivation and address matching for lxmf-vanity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+x25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

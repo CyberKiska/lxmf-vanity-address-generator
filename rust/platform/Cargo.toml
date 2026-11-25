@@ -1,0 +1,39 @@
+[package]
+name = "lxmf-vanity-platform"
+description = "Operating-system adapters for lxmf-vanity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+signal-hook.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+# Not inherited from the workspace: unsafe code is denied here, so that only
+# rust/platform/src/windows/ can opt in with a written justification. The
+# Clippy set is the workspace set.
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[lints.cargo]
+unused_dependencies = "allow"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+exit = "deny"
+mem_forget = "deny"
+undocumented_unsafe_blocks = "deny"
