@@ -13,13 +13,13 @@ use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
 use std::time::Duration;
 
+use lxmf_vanity_core::matcher::validate_patterns;
+
 use crate::goparse::{self, NumError};
 use crate::goquote::{quote_into, quote_list_into};
 
 /// Largest accepted `--workers` value (`maxWorkerCount` in Go).
 pub(crate) const MAX_WORKERS: usize = 256;
-/// Hex characters in an LXMF address (`addressHexLength` in Go).
-const ADDRESS_HEX_LENGTH: usize = 32;
 /// Exit status of every parse or validation error.
 pub(crate) const EXIT_USAGE: u8 = 2;
 
@@ -602,49 +602,6 @@ impl std::fmt::Display for ValidationError {
 
 fn invalid<T>(msg: impl Into<String>) -> Result<T, ValidationError> {
     Err(ValidationError(msg.into()))
-}
-
-// ponytail: STUB for `lxmf_vanity_core::matcher::validate_patterns` (task P1-03, not merged
-// yet). Same signature and the same six messages in Go's order. When P1-03 lands, delete this
-// function and `PatternError`, and import the core one; `validate` needs no other change.
-#[derive(Debug)]
-pub(crate) struct PatternError(&'static str);
-
-impl std::fmt::Display for PatternError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-fn validate_patterns(prefix: &[u8], postfix: &[u8]) -> Result<(), PatternError> {
-    let is_hex = |s: &[u8]| s.iter().all(u8::is_ascii_hexdigit);
-    if prefix.is_empty() && postfix.is_empty() {
-        return Err(PatternError(
-            "at least one of --prefix or --postfix must be specified",
-        ));
-    }
-    if prefix.len() > ADDRESS_HEX_LENGTH {
-        return Err(PatternError("prefix must be 1-32 hex characters"));
-    }
-    if postfix.len() > ADDRESS_HEX_LENGTH {
-        return Err(PatternError("postfix must be 1-32 hex characters"));
-    }
-    if !is_hex(prefix) {
-        return Err(PatternError(
-            "prefix must contain only hex characters [0-9a-fA-F]",
-        ));
-    }
-    if !is_hex(postfix) {
-        return Err(PatternError(
-            "postfix must contain only hex characters [0-9a-fA-F]",
-        ));
-    }
-    if prefix.len() + postfix.len() > ADDRESS_HEX_LENGTH {
-        return Err(PatternError(
-            "combined prefix and postfix length must not exceed 32 hex characters",
-        ));
-    }
-    Ok(())
 }
 
 /// Port of Go's `strings.ToLower` as far as it can change a pattern's validity or length:
