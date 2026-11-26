@@ -21,57 +21,8 @@ use unix as imp;
 
 #[cfg(windows)]
 mod windows;
-// Placeholder until the Windows layer lands: it must replace this module with
-// `use windows as imp;` and provide the same items (`Dir`, `RawFileId`,
-// `file_meta`, `harden_process`, `stderr_is_char_device`, `effective_uid`).
 #[cfg(windows)]
-mod imp {
-    use super::{FileMeta, HardenError};
-    use std::ffi::OsStr;
-    use std::fs::File;
-    use std::io;
-    use std::path::Path;
-
-    fn unsupported<T>() -> io::Result<T> {
-        Err(io::ErrorKind::Unsupported.into())
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub(crate) struct RawFileId;
-
-    #[derive(Debug)]
-    pub(crate) struct Dir;
-
-    impl Dir {
-        pub(crate) fn open(_: &Path) -> io::Result<Dir> {
-            unsupported()
-        }
-        pub(crate) fn stat_self(&self) -> io::Result<FileMeta> {
-            unsupported()
-        }
-        pub(crate) fn lstat(&self, _: &OsStr) -> io::Result<FileMeta> {
-            unsupported()
-        }
-        pub(crate) fn open_read_nofollow(&self, _: &OsStr) -> io::Result<File> {
-            unsupported()
-        }
-    }
-
-    pub(crate) fn file_meta(_: &File) -> io::Result<FileMeta> {
-        unsupported()
-    }
-    // Go's harden_other.go is `func hardenProcess() error { return nil }`:
-    // nothing to do on Windows, and no "hardening unavailable" notice.
-    pub(crate) fn harden_process() -> Result<(), HardenError> {
-        Ok(())
-    }
-    pub(crate) fn stderr_is_char_device() -> bool {
-        false
-    }
-    pub(crate) fn effective_uid() -> Option<u32> {
-        None
-    }
-}
+use windows as imp;
 
 /// What a directory entry or open file is. `Other` covers FIFOs, devices,
 /// sockets and anything else that is not one of the first three.
@@ -85,7 +36,8 @@ pub enum FileKind {
 
 /// Identity of a file on disk, with the semantics of Go's `os.SameFile`:
 /// two values are equal when they name the same file. On Unix this is the
-/// `(st_dev, st_ino)` pair.
+/// `(st_dev, st_ino)` pair; on Windows the volume serial number and the 64-bit
+/// file index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FileId(pub(crate) imp::RawFileId);
 
@@ -152,6 +104,54 @@ impl AnchoredDir {
         check_name(name)?;
         self.inner.open_read_nofollow(name)
     }
+
+    /// Opens entry `name` for reading and writing without following a
+    /// symlink, to read back and then sync a file this process owns. The
+    /// caller checks identity and kind afterwards.
+    pub fn open_rw_nofollow(&self, name: &OsStr) -> io::Result<File> {
+        check_name(name)?;
+        self.inner.open_rw_nofollow(name)
+    }
+
+    /// Creates `name` for writing and fails with `AlreadyExists` if the name
+    /// exists in any form, including a dangling symlink (`O_CREAT | O_EXCL`
+    /// without following). The new file is empty and owner-private where the
+    /// platform has such a notion.
+    pub fn create_exclusive(&self, name: &OsStr) -> io::Result<File> {
+        check_name(name)?;
+        self.inner.create_exclusive(name)
+    }
+
+    /// Hard-links `existing` as `new` inside this directory. Fails with
+    /// `AlreadyExists` if `new` exists and `Unsupported` where the filesystem
+    /// has no hard links. An error does not prove that no link was created:
+    /// the caller re-checks identity with [`AnchoredDir::lstat`].
+    pub fn link_noreplace(&self, existing: &OsStr, new: &OsStr) -> io::Result<()> {
+        check_name(existing)?;
+        check_name(new)?;
+        self.inner.link_noreplace(existing, new)
+    }
+
+    /// Removes the entry `name` itself; a symlink or junction is removed, never
+    /// its target.
+    pub fn remove(&self, name: &OsStr) -> io::Result<()> {
+        check_name(name)?;
+        self.inner.remove(name)
+    }
+
+    /// Flushes the directory itself to storage. `Unsupported` on Windows, as
+    /// in Go, and where the filesystem cannot flush a directory.
+    pub fn sync_dir(&self) -> io::Result<()> {
+        self.inner.sync_dir()
+    }
+
+    /// Identity of whatever the original path resolves to now (the directory
+    /// reopened by path, with a terminal `.`). Compare it with
+    /// `stat_self().id` to learn that the directory moved or was replaced
+    /// (Go's `checkLocation`). This is the only operation that uses the path.
+    pub fn current_path_identity(&self) -> io::Result<FileId> {
+        self.inner.current_path_identity(&self.path)
+    }
 }
 
 /// The second safeguard before any `os.Root`-style call: one component only.
@@ -181,6 +181,19 @@ fn contains_separator(name: &OsStr) -> bool {
 /// Metadata of an open file (`fstat`).
 pub fn file_meta(file: &File) -> io::Result<FileMeta> {
     imp::file_meta(file)
+}
+
+/// Makes `file` private to its owner as far as Go's `Chmod(0600)` does: mode
+/// `0600` on Unix, and on Windows only clearing `FILE_ATTRIBUTE_READONLY`
+/// (access-control lists are not touched).
+pub fn set_private_mode(file: &File) -> io::Result<()> {
+    imp::set_private_mode(file)
+}
+
+/// Flushes `file` to storage (`fsync`, `F_FULLFSYNC` on macOS,
+/// `FlushFileBuffers` on Windows).
+pub fn sync_file(file: &File) -> io::Result<()> {
+    imp::sync_file(file)
 }
 
 /// Every error [`harden_process`] met. Hardening is best effort: the caller
