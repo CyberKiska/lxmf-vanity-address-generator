@@ -22,6 +22,11 @@ mod goquote;
     expect(dead_code, reason = "the output formats are wired into main later")
 )]
 mod jsonw;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the output formats are wired into main later")
+)]
+mod public_result;
 
 fn main() -> ExitCode {
     // A failed write has nowhere else to go; the exit status carries the result.
