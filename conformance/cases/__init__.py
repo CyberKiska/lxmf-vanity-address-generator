@@ -2,7 +2,7 @@
 
 import importlib
 
-MODULES = ("smoke", "cli_grammar", "cli_validation", "fips", "search_modes")
+MODULES = ("smoke", "cli_grammar", "cli_validation", "fips", "search_modes", "save_path")
 
 
 def load_cases():
