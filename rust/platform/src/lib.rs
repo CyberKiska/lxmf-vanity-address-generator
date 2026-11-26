@@ -65,6 +65,12 @@ mod imp {
     pub(crate) fn harden_process() -> Result<(), HardenError> {
         Ok(())
     }
+    pub(crate) fn stderr_is_char_device() -> bool {
+        false
+    }
+    pub(crate) fn effective_uid() -> Option<u32> {
+        None
+    }
 }
 
 /// What a directory entry or open file is. `Other` covers FIFOs, devices,
@@ -213,4 +219,16 @@ impl std::error::Error for HardenError {}
 /// a test process (use the `harden_probe` helper binary).
 pub fn harden_process() -> Result<(), HardenError> {
     imp::harden_process()
+}
+
+/// True when standard error is a character device, like Go's
+/// `ModeCharDevice` check. This is not `IsTerminal`: `/dev/null` counts. On
+/// Windows it is the console check.
+pub fn stderr_is_char_device() -> bool {
+    imp::stderr_is_char_device()
+}
+
+/// The effective user id; `None` on Windows.
+pub fn effective_uid() -> Option<u32> {
+    imp::effective_uid()
 }

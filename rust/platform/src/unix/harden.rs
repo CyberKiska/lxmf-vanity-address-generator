@@ -1,10 +1,11 @@
-//! Process hardening; no `unsafe`.
+//! Process hardening and small process queries; no `unsafe`.
 //!
 //! Basis: the example rewrite's hardening, which set both limits to 0 and
 //! used libc. This is a port of harden_unix.go and harden_linux.go instead.
 
 use crate::HardenError;
-use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+use rustix::fs::{FileType, fstat};
+use rustix::process::{Resource, Rlimit, geteuid, getrlimit, setrlimit};
 use std::io;
 
 /// Port of harden_unix.go `hardenProcess`: lower only the soft core limit,
@@ -41,4 +42,15 @@ fn disable_dumpability() -> io::Result<()> {
 #[cfg(not(target_os = "linux"))]
 fn disable_dumpability() -> io::Result<()> {
     Ok(())
+}
+
+/// Port of main.go `isCharacterDevice(stderr)`: `ModeCharDevice`, not a
+/// terminal check. A failing `fstat` (for example a closed stderr) is false.
+pub(crate) fn stderr_is_char_device() -> bool {
+    fstat(io::stderr())
+        .is_ok_and(|st| FileType::from_raw_mode(st.st_mode) == FileType::CharacterDevice)
+}
+
+pub(crate) fn effective_uid() -> Option<u32> {
+    Some(geteuid().as_raw())
 }
