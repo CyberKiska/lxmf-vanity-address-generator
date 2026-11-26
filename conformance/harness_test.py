@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -80,6 +81,40 @@ for step in script:
             f.write("%d\n" % child.pid)
     elif op == "sleep":
         time.sleep(step[1])
+    elif op == "trap":  # count the named signals; "wait_for" reports each one on stderr
+        import signal
+        received = []
+        for name in step[1:]:
+            signal.signal(getattr(signal, "SIG" + name), lambda num, frame: received.append(signal.Signals(num).name[3:]))
+    elif op == "wait_for":
+        seen = 0
+        deadline = time.time() + 60
+        while seen < step[1] and time.time() < deadline:
+            time.sleep(0.01)
+            while seen < len(received):
+                sys.stderr.write("sig:%s\n" % received[seen]); sys.stderr.flush(); seen += 1
+    elif op == "flood":  # a lot of output on both streams, to prove the pipes are drained
+        for stream in (sys.stdout, sys.stderr):
+            for _ in range(step[1] // 100):
+                stream.write("x" * 99 + "\n")
+            stream.flush()
+    elif op == "out_pipe":  # write to stdout; a broken pipe is exit code 7
+        try:
+            time.sleep(step[2]); sys.stdout.buffer.write(step[1].encode()); sys.stdout.buffer.flush()
+        except BrokenPipeError:
+            os._exit(7)
+    elif op == "stderr_full":  # is the stderr pipe full right now?
+        os.set_blocking(2, False)
+        try:
+            os.write(2, b"x"); sys.stdout.write("room\n")
+        except BlockingIOError:
+            sys.stdout.write("full\n")
+        os.set_blocking(2, True)
+        sys.stdout.flush()
+    elif op == "flaky":  # fails the first time it runs, passes later
+        if not os.path.exists(step[1]):
+            open(step[1], "w").close()
+            code = 1
     elif op == "exit":
         code = step[1]
 sys.exit(code)
@@ -797,6 +832,195 @@ class EntryPointTests(FakeBinaryTest):
         status, out, _ = self.main("--binary", self.binary(), "--timeout", "0.5", cases=[slow])
         self.assertEqual(status, 1)
         self.assertIn("FAIL unit.slow (timeout)", out)
+
+
+@unittest.skipUnless(POSIX, "interactive runs are POSIX only")
+class InteractiveTests(FakeBinaryTest):
+    def interactive(self, script, interact, **kwargs):
+        return self.single(self.case(script, interact=interact, **kwargs))
+
+    def test_signals_are_sent_in_sequence_after_waiting_for_marker_lines(self):
+        steps = []
+
+        def interact(ctx, session):
+            steps.append(session.wait_line("ready"))
+            session.signal(signal.SIGINT)
+            steps.append(session.wait_line("sig:"))
+            session.signal(signal.SIGTERM)
+            steps.append(session.wait_line("sig:TERM"))
+            steps.append(session.wait_exit(5))
+
+        result = self.interactive([["trap", "INT", "TERM"], ["err", "ready\n"], ["wait_for", 2], ["exit", 130]], interact,
+                                  expect=Expectation(exit_code=130, stderr_lines=("ready", "sig:INT", "sig:TERM")))
+        self.assertEqual(result.status, "PASS", result.failures)
+        self.assertEqual(steps, ["ready", "sig:INT", "sig:TERM", 130])
+
+    def test_each_wait_continues_after_the_previous_match(self):
+        seen = []
+
+        def interact(ctx, session):
+            seen.append(session.wait_line("tick"))
+            seen.append(session.wait_line("tick"))
+            seen.append(session.stderr_lines())
+
+        result = self.interactive([["err", "tick 1\ntick 2\n"]], interact)
+        self.assertEqual(result.status, "PASS", result.failures)
+        self.assertEqual(seen, ["tick 1", "tick 2", ["tick 1", "tick 2"]])
+
+    def test_regex_patterns_match_anywhere_in_the_line(self):
+        def interact(ctx, session):
+            self.assertEqual(session.wait_line(re.compile(r"b+c")), "abbbc d")
+
+        import re
+        self.assertEqual(self.interactive([["err", "zzz\nabbbc d\n"]], interact).status, "PASS")
+
+    def test_both_pipes_are_drained_while_waiting(self):
+        sizes = []
+
+        def interact(ctx, session):
+            session.wait_line("ready")  # the flood (far beyond a pipe's capacity) comes first
+            session.signal(signal.SIGINT)
+
+        def check(ctx, obs):
+            sizes.append((len(obs.stdout), len(obs.stderr)))
+            return []
+
+        result = self.interactive([["trap", "INT"], ["flood", 1_000_000], ["err", "ready\n"], ["wait_for", 1]], interact,
+                                  expect=Expectation(exit_code=0, check=check))
+        self.assertEqual(result.status, "PASS", result.failures)
+        self.assertEqual(sizes, [(1_000_000, 1_000_000 + len("ready\nsig:INT\n"))])
+
+    def test_a_line_that_never_appears_fails_the_case_and_kills_the_process(self):
+        started = time.monotonic()
+        result = self.interactive([["err", "other\n"], ["sleep", 60]],
+                                  lambda ctx, session: session.wait_line("ready", timeout=0.5))
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("(interaction) no line 'ready' within 0.5 s; last lines: ['other']", result.failures[0])
+        self.assertFalse(result.candidate.timed_out)
+
+    def test_a_process_that_exits_before_the_line_is_reported(self):
+        result = self.interactive([["err", "bye\n"], ["exit", 3]], lambda ctx, session: session.wait_line("ready"))
+        self.assertEqual(result.status, "FAIL")
+        self.assertRegex(result.failures[0], r"\(interaction\) stderr closed \(exit code \d+\) before the line 'ready'")
+
+    def test_a_last_line_without_newline_is_still_a_line(self):
+        result = self.interactive([["err", "ready"]], lambda ctx, session: session.wait_line("ready"))
+        self.assertEqual(result.status, "PASS", result.failures)
+
+    def test_signalling_an_exited_process_and_a_hung_exit_are_failures(self):
+        def late(ctx, session):
+            session.wait_exit(5)
+            session.signal(signal.SIGINT)
+
+        self.assertIn("exited with code 0", self.failures(self.interactive([], late)))
+        result = self.interactive([["sleep", 60]], lambda ctx, session: session.wait_exit(0.3))
+        self.assertIn("did not exit within 0.3 s", self.failures(result))
+
+    def test_a_closed_stdout_breaks_the_pipe_for_the_process(self):
+        script = [["err", "ready\n"], ["out_pipe", "late\n", 0.3]]
+        result = self.single(self.case(script, stdout_closed=True, expect=Expectation(exit_code=7, stdout=b"",
+                                                                                       stderr_lines=("ready",))))
+        self.assertEqual(result.status, "PASS", result.failures)
+        self.assertEqual(self.single(self.case(script, interact=lambda ctx, session: None,
+                                               expect=Expectation(exit_code=0, stdout=b"late\n"))).status, "PASS")
+
+    def test_the_run_ends_with_the_ordinary_observation_and_secret_scan(self):
+        steps = [["write", "o/id", SECRET.hex(), None], ["err", f"ready {SECRET.hex()}\n"]]
+        result = self.interactive(steps, lambda ctx, session: session.wait_line("ready"),
+                                  setup=lambda ctx: ctx.mkdir("o"),
+                                  expect=Expectation(exit_code=0, files={"o/id": (len(SECRET) // 2 or 1, None)}))
+        self.assertIn("secret encoding found in stderr", self.failures(result))
+        self.assertNotIn(SECRET.hex(), self.failures(result))
+        clean = self.interactive([["write", "o/id", SECRET.hex(), None], ["err", "ready\n"]],
+                                 lambda ctx, session: session.wait_line("ready"), setup=lambda ctx: ctx.mkdir("o"),
+                                 expect=Expectation(exit_code=0, files={"o/id": (None, None)}, stderr_lines=("ready",)))
+        self.assertEqual(clean.status, "PASS", clean.failures)
+
+    def test_the_case_timeout_still_bounds_a_run_whose_steps_all_succeed(self):
+        result = self.interactive([["sleep", 60]], lambda ctx, session: None, timeout=0.5)
+        self.assertIn("(timeout)", result.failures[0])
+        self.assertTrue(result.candidate.timed_out)
+
+    def test_a_crash_in_the_interaction_fails_the_case_and_leaves_no_process(self):
+        pidfile = Path(self.work, "pids-interact")
+        pidfile.unlink(missing_ok=True)
+
+        def interact(ctx, session):
+            session.wait_line("ready")
+            raise ZeroDivisionError
+
+        result = self.interactive([["pid"], ["child"], ["err", "ready\n"], ["sleep", 60]], interact,
+                                  env={"FAKE_PIDFILE": str(pidfile)})
+        self.assertIn("ZeroDivisionError", self.failures(result))
+        deadline = time.monotonic() + 10
+        for pid in (int(line) for line in pidfile.read_text().split()):
+            while alive(pid):
+                self.assertLess(time.monotonic(), deadline, f"process {pid} survived")
+                time.sleep(0.05)
+
+    def test_an_unread_stderr_pipe_is_full_from_the_start_and_its_filler_is_not_observed(self):
+        result = self.single(self.case([["stderr_full"]], hold_stderr=True,
+                                       expect=Expectation(exit_code=0, stdout="full\n", stderr_lines=())))
+        self.assertEqual(result.status, "PASS", result.failures)
+        plain = self.single(self.case([["stderr_full"]], interact=lambda ctx, session: None,
+                                      expect=Expectation(exit_code=0, stdout="room\n")))
+        self.assertEqual(plain.status, "PASS", plain.failures)
+
+    def test_a_process_that_writes_to_the_unread_pipe_blocks_until_the_timeout(self):
+        result = self.single(self.case([["err", "blocked\n"]], hold_stderr=True, timeout=1.0))
+        self.assertIn("(timeout)", result.failures[0])
+
+    def test_interactive_runs_work_in_differential_mode(self):
+        case = self.case([["trap", "INT"], ["err", "ready\n"], ["wait_for", 1]],
+                         interact=lambda ctx, session: (session.wait_line("ready"), session.signal(signal.SIGINT)),
+                         compare=frozenset({"exit", "stderr"}))
+        result = harness.run_case(case, self.target("candidate"), self.target("reference"))
+        self.assertEqual(result.status, "PASS", result.failures)
+
+    def test_interactive_cases_cannot_take_stdin(self):
+        with self.assertRaises(ValueError):
+            Case(id="a.b", description="d", interact=lambda ctx, session: None, stdin=b"x")
+
+
+class RetryTests(FakeBinaryTest):
+    def flaky(self, name, **kwargs):
+        marker = Path(self.work, name)
+        marker.unlink(missing_ok=True)
+        return self.case([["flaky", str(marker)]], expect=Expectation(exit_code=0), **kwargs)
+
+    def test_a_case_that_fails_once_passes_on_the_retry_with_a_note(self):
+        result = self.single(self.flaky("retry-ok", retries=1))
+        self.assertEqual((result.status, result.retried), ("PASS", True))
+        self.assertTrue(result.notes[0].startswith("retry used; the first run failed: exit code 1, expected 0"))
+        self.assertIn("note: retry used", run.describe(result))
+
+    def test_without_retries_the_first_failure_stands(self):
+        result = self.single(self.flaky("retry-none"))
+        self.assertEqual((result.status, result.retried), ("FAIL", False))
+
+    def test_a_case_that_fails_twice_fails_and_says_it_retried(self):
+        result = self.single(self.case([["exit", 1]], expect=Expectation(exit_code=0), retries=1))
+        self.assertEqual((result.status, result.retried), ("FAIL", True))
+        self.assertIn("exit code 1, expected 0", result.failures[0])
+
+    def test_a_case_that_passes_first_time_is_not_retried(self):
+        result = self.single(self.case([], expect=Expectation(exit_code=0), retries=1))
+        self.assertEqual((result.status, result.retried, result.notes), ("PASS", False, []))
+
+    def test_at_most_one_retry_is_allowed(self):
+        with self.assertRaises(ValueError):
+            Case(id="a.b", description="d", retries=2)
+
+    def test_the_report_records_the_retry(self):
+        result = self.single(self.flaky("retry-report", retries=1))
+        report = harness.build_report([result], "single", "fake", None)
+        self.assertTrue(report["cases"][0]["retried"])
+
+    def test_keep_failed_keeps_nothing_when_the_retry_passes(self):
+        with tempfile.TemporaryDirectory() as keep:
+            self.single(self.flaky("retry-keep", retries=1), keep_failed=keep)
+            self.assertEqual(os.listdir(keep), [])
 
 
 class RegistryTests(unittest.TestCase):
