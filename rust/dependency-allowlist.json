@@ -188,7 +188,7 @@
       "typenum 1.20.1": "const-generics",
       "unicode-ident 1.0.27": "",
       "windows-link 0.2.1": "",
-      "windows-sys 0.61.2": "Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_System,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,default",
+      "windows-sys 0.61.2": "Wdk,Wdk_Foundation,Wdk_Storage,Wdk_Storage_FileSystem,Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_Security,Win32_Storage,Win32_Storage_FileSystem,Win32_System,Win32_System_Console,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,Win32_System_IO,default",
       "x25519-dalek 3.0.0": "precomputed-tables,static_secrets,zeroize",
       "zeroize 1.9.2": "alloc,default"
     },
@@ -212,7 +212,7 @@
       "subtle 2.6.1": "const-generics,default,i128,std",
       "typenum 1.20.1": "const-generics",
       "windows-link 0.2.1": "",
-      "windows-sys 0.61.2": "Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_System,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,default",
+      "windows-sys 0.61.2": "Wdk,Wdk_Foundation,Wdk_Storage,Wdk_Storage_FileSystem,Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_Security,Win32_Storage,Win32_Storage_FileSystem,Win32_System,Win32_System_Console,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,Win32_System_IO,default",
       "x25519-dalek 3.0.0": "precomputed-tables,static_secrets,zeroize",
       "zeroize 1.9.2": "alloc,default"
     }

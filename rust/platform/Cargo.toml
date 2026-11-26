@@ -12,7 +12,15 @@ rustix.workspace = true
 signal-hook.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
+windows-sys = { workspace = true, features = [
+    "Wdk_Foundation",          # OBJECT_ATTRIBUTES
+    "Wdk_Storage_FileSystem",  # NtCreateFile, NtOpenFile, NtSetInformationFile, FILE_* options
+    "Win32_Foundation",        # NTSTATUS, HANDLE, UNICODE_STRING, RtlNtStatusToDosError
+    "Win32_Security",          # types inside OBJECT_ATTRIBUTES
+    "Win32_Storage_FileSystem", # GetFileInformationByHandle(Ex), SetFileInformationByHandle, ReOpenFile, GetFileType
+    "Win32_System_Console",    # GetStdHandle
+    "Win32_System_IO",         # IO_STATUS_BLOCK
+] }
 
 # Not inherited from the workspace: unsafe code is denied here, so that only
 # rust/platform/src/windows/ can opt in with a written justification. The
