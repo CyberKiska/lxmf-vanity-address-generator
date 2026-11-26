@@ -4,6 +4,8 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+mod godebug;
+
 fn main() -> ExitCode {
     // A failed write has nowhere else to go; the exit status carries the result.
     let _ = std::io::stderr()
