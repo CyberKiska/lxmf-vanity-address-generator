@@ -52,3 +52,6 @@ jobs:
       - name: Test the dependency guard
         shell: bash
         run: python -m unittest check_rust_deps_test
+      - name: Check the generated Rust test vectors
+        shell: bash
+        run: python scripts/gen_rust_test_vectors.py --check

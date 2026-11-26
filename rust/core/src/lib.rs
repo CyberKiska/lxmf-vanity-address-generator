@@ -4,4 +4,6 @@
 //! and performs no input or output.
 #![forbid(unsafe_code)]
 
+pub mod identity;
 pub mod matcher;
+pub mod selftest;
