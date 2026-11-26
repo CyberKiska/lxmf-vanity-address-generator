@@ -21,3 +21,6 @@ pub(crate) use file::{
     effective_uid, harden_process, set_private_mode, stderr_is_char_device, sync_file,
 };
 pub(crate) use meta::{RawFileId, file_meta};
+
+#[cfg(test)]
+mod tests;

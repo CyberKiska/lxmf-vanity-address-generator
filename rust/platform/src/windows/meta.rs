@@ -75,15 +75,19 @@ pub(super) fn is_name_surrogate(handle: HANDLE) -> io::Result<bool> {
 /// Metadata of an open handle. The kind follows Go's `fileStat.Mode`:
 /// name-surrogate reparse points (symlink, junction) are reported as
 /// `Symlink` (the task decision; Go calls a junction irregular, and both are
-/// "not regular" to every caller), dedup files count as their underlying
-/// type, other reparse points are `Other`.
+/// "not regular" to every caller), dedup files and directories with another
+/// reparse tag count as their underlying type, other reparse points are
+/// `Other`.
 pub(super) fn handle_meta(handle: HANDLE) -> io::Result<FileMeta> {
     let info = by_handle(handle)?;
     let kind = if is_reparse(&info) {
         let tag = reparse_tag(handle)?;
         if tag & TAG_NAME_SURROGATE != 0 {
             FileKind::Symlink
-        } else if tag == TAG_DEDUP {
+        } else if tag == TAG_DEDUP || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            // Go: dedup files count as regular, and a directory with another
+            // reparse tag (cloud sync folders) is still a directory (Go also
+            // marks it irregular, which no caller of `kind` looks at).
             plain_kind(&info)
         } else {
             FileKind::Other
