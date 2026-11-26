@@ -3,3 +3,5 @@
 //! This crate holds the secret-handling logic. It contains no `unsafe` code
 //! and performs no input or output.
 #![forbid(unsafe_code)]
+
+pub mod matcher;
