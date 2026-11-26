@@ -12,6 +12,11 @@ mod version;
     not(test),
     expect(dead_code, reason = "argument handling is wired into main later")
 )]
+mod goparse;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "argument handling is wired into main later")
+)]
 mod goquote;
 
 fn main() -> ExitCode {
