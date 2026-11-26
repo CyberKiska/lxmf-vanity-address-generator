@@ -4,6 +4,11 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the output formats are wired into main later")
+)]
+mod encode;
 mod godebug;
 mod version;
 
