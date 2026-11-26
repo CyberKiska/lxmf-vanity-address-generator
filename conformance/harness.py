@@ -19,12 +19,15 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import shutil
 import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from collections.abc import Callable, Mapping
 from decimal import Decimal
 
@@ -231,6 +234,14 @@ class Case:
              candidate may meet deviation_expect instead of expect (DEVIATION status)
     random_identity / attempts_nondeterministic  mask identity fields / attempts when comparing
     allow_sidecar_exports  private exports are allowed in created *.txt files only
+    interact  callable(ctx, session) that drives the running process (POSIX only): wait for stderr
+             lines, send signals, close stdout, wait for the exit. See Session. The run still ends
+             with the ordinary observation, normalization and secret scanning.
+    hold_stderr  stderr is a pipe that is filled to capacity before the start and not read until
+             the process has exited, so a write by the process blocks (POSIX only)
+    stdout_closed  stdout is a pipe whose read end is closed before the start, so a write by the
+             process fails with a broken pipe (POSIX only)
+    retries  0 or 1: a timing-based case that fails is run once more; the report says so
     """
     id: str
     description: str
@@ -248,6 +259,10 @@ class Case:
     random_identity: bool = False
     attempts_nondeterministic: bool = False
     allow_sidecar_exports: bool = False
+    interact: Callable | None = None
+    hold_stderr: bool = False
+    stdout_closed: bool = False
+    retries: int = 0
 
     def __post_init__(self):
         if not CASE_ID.fullmatch(self.id):
@@ -258,6 +273,10 @@ class Case:
             raise ValueError(f"{self.id}: unknown platforms")
         if self.deviation_expect is not None and not self.deviation:
             raise ValueError(f"{self.id}: deviation_expect needs a deviation id")
+        if self.retries not in (0, 1):
+            raise ValueError(f"{self.id}: a case may retry at most once")
+        if (self.interact or self.hold_stderr or self.stdout_closed) and self.stdin is not None:
+            raise ValueError(f"{self.id}: interactive runs take no stdin")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -313,6 +332,174 @@ def run_process(argv, cwd, env, stdin, timeout):
         except subprocess.TimeoutExpired:  # a surviving descendant holds the pipes open
             out = err = b""
         return proc.returncode, out, err, True
+
+
+# --- Interactive runs (POSIX only) -------------------------------------------
+
+class InteractionError(Exception):
+    """An interaction step failed: a line never appeared, the process died early or hung."""
+
+
+def _fill_pipe(fd):
+    """Fill a pipe's buffer to the brim with filler bytes; return how many were written."""
+    os.set_blocking(fd, False)
+    total = 0
+    try:
+        for chunk in (4096, 1):
+            while True:
+                try:
+                    total += os.write(fd, b"." * chunk)
+                except BlockingIOError:
+                    break
+    finally:
+        os.set_blocking(fd, True)
+    return total
+
+
+class Session:
+    """Handle on a running process for Case.interact callables.
+
+    A pump thread reads stdout and stderr as they arrive, so the pipes never fill; stderr is split
+    into lines that wait_line can wait for. Timeouts are in seconds; a failed wait raises InteractionError.
+    """
+
+    def __init__(self, proc, out_fd, err_fd):
+        self.proc = proc
+        self.out, self.err = bytearray(), bytearray()
+        self._lines, self._cursor, self._partial = [], 0, b""
+        self._cond = threading.Condition()
+        self._thread = threading.Thread(target=self._pump, args=(out_fd, err_fd), daemon=True)
+        self._thread.start()
+
+    def _pump(self, out_fd, err_fd):
+        sel = selectors.DefaultSelector()
+        streams = {}
+        for fd, name in ((out_fd, "out"), (err_fd, "err")):
+            if fd is not None:
+                sel.register(fd, selectors.EVENT_READ, name)
+                streams[name] = fd
+        try:
+            while streams:
+                for key, _ in sel.select():
+                    data = os.read(key.fd, 65536)
+                    if not data:
+                        sel.unregister(key.fd)
+                        os.close(key.fd)
+                        del streams[key.data]
+                    elif key.data == "out":
+                        self.out += data
+                    else:
+                        with self._cond:
+                            self.err += data
+                            *complete, self._partial = (self._partial + data).split(b"\n")
+                            self._lines += [line.decode("utf-8", "surrogateescape") for line in complete]
+                            self._cond.notify_all()
+        finally:
+            sel.close()
+            with self._cond:
+                if self._partial:
+                    self._lines.append(self._partial.decode("utf-8", "surrogateescape"))
+                    self._partial = b""
+                self._cond.notify_all()
+
+    def join_pump(self, timeout=5.0):
+        self._thread.join(timeout)  # a descendant that keeps the pipes open is left to the daemon thread
+
+    def stderr_lines(self):
+        """The complete stderr lines received so far."""
+        with self._cond:
+            return list(self._lines)
+
+    def wait_line(self, pattern, timeout=60.0):
+        """Wait for the next stderr line, after the one the previous wait matched, that starts with
+        `pattern` (a str) or matches it (a compiled regex). Returns the line."""
+        text = getattr(pattern, "pattern", pattern)
+        match = pattern.search if hasattr(pattern, "search") else (lambda line: line.startswith(pattern))
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while True:
+                for i in range(self._cursor, len(self._lines)):
+                    if match(self._lines[i]):
+                        self._cursor = i + 1
+                        return self._lines[i]
+                if not self._thread.is_alive():
+                    raise InteractionError(f"stderr closed (exit code {self.proc.poll()}) before the line "
+                                           f"{text!r} appeared")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise InteractionError(f"no line {text!r} within {timeout:g} s; last lines: "
+                                           f"{[line[:60] for line in self._lines[-3:]]}")
+                self._cond.wait(min(remaining, 0.1))
+
+    def signal(self, signum):
+        """Send a signal to the process, which must still be running."""
+        if self.proc.poll() is not None:
+            raise InteractionError(f"cannot send signal {int(signum)}: the process exited with code "
+                                   f"{self.proc.returncode}")
+        os.kill(self.proc.pid, signum)
+
+    def wait_exit(self, timeout):
+        """Wait for the process to exit and return its exit code."""
+        try:
+            return self.proc.wait(timeout)
+        except subprocess.TimeoutExpired:
+            raise InteractionError(f"the process did not exit within {timeout:g} s") from None
+
+
+def run_interactive(argv, cwd, env, timeout, interact, ctx, hold_stderr, stdout_closed):
+    """Like run_process, but `interact(ctx, session)` drives the process while it runs. The timeout
+    bounds the process once the interaction has ended; the interaction's own waits have timeouts.
+    With hold_stderr, stderr is a pipe filled to capacity before the start and read only after the exit.
+    With stdout_closed, stdout is a pipe without a reader: a write by the process breaks it.
+    Returns (exit code, stdout, stderr, timed_out, interaction problem or None)."""
+    if os.name != "posix":
+        raise HarnessError("interactive runs are POSIX only")
+    out_r, out_w = os.pipe()
+    err_r, err_w = os.pipe()
+    filler = _fill_pipe(err_w) if hold_stderr else 0
+    if stdout_closed:
+        os.close(out_r)
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out_w, stderr=err_w,
+                                start_new_session=True)
+    except OSError as exc:
+        for fd in (out_w, err_r, err_w, *([] if stdout_closed else [out_r])):
+            os.close(fd)
+        raise HarnessError(f"cannot execute the binary: {exc.strerror or type(exc).__name__}") from None
+    os.close(out_w)
+    os.close(err_w)
+    session = Session(proc, None if stdout_closed else out_r, None if hold_stderr else err_r)
+    problem, timed_out = None, False
+    try:
+        if interact is not None:
+            try:
+                interact(ctx, session)
+            except InteractionError as exc:
+                problem = f"(interaction) {exc}"
+        try:
+            proc.wait(0 if problem else timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = problem is None
+    finally:
+        if proc.poll() is None:  # also reaches descendants: the child leads its own session
+            _kill(proc)
+            proc.wait()
+        session.join_pump()
+    err = bytes(session.err)
+    if hold_stderr:
+        os.set_blocking(err_r, False)
+        data = bytearray()
+        while True:
+            try:
+                chunk = os.read(err_r, 65536)
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            data += chunk
+        os.close(err_r)
+        err = bytes(data)[filler:]
+    return proc.returncode, bytes(session.out), err, timed_out, problem
 
 
 def _entry(path, with_digest):
@@ -588,7 +775,12 @@ def _execute(case, role, target, peer, default_timeout):
             else:
                 env[key] = ctx.expand(value)
         timeout = case.timeout or default_timeout
-        code, out, err, timed_out = run_process(argv, ctx.tmp, env, case.stdin, timeout)
+        problem = None
+        if case.interact or case.hold_stderr or case.stdout_closed:
+            code, out, err, timed_out, problem = run_interactive(
+                argv, ctx.tmp, env, timeout, case.interact, ctx, case.hold_stderr, case.stdout_closed)
+        else:
+            code, out, err, timed_out = run_process(argv, ctx.tmp, env, case.stdin, timeout)
         after = snapshot(ctx.tmp)
         created = sorted(p for p in after if p not in before)
         files = [{"path": p, **_public(after[p])} for p in created]
@@ -605,7 +797,7 @@ def _execute(case, role, target, peer, default_timeout):
                 texts[p] = (ctx.tmp / p).read_bytes()
         obs = Observation(code, timed_out, out, err, parse_result(out), files, changes, texts)
         norm = normalize(case, ctx, obs)
-        invariants = []
+        invariants = [problem] if problem else []
         if timed_out:
             invariants.append(f"(timeout) the process was killed after {timeout:g} s")
         invariants += norm.problems
@@ -786,6 +978,7 @@ class CaseResult:
     notes: list = dataclasses.field(default_factory=list)
     candidate: Normalized | None = None
     reference: Normalized | None = None
+    retried: bool = False  # the case failed once and was run again (Case.retries)
 
 
 def _observation_report(norm):
@@ -809,7 +1002,7 @@ def build_report(results, mode, binary, reference):
         "platform": {"os": current_platform(), "machine": os.uname().machine if hasattr(os, "uname") else None,
                      "python": sys.version.split()[0]},
         "summary": counts,
-        "cases": [{"id": r.id, "status": r.status, "deviation": r.deviation, "exit_code":
+        "cases": [{"id": r.id, "status": r.status, "deviation": r.deviation, "retried": r.retried, "exit_code":
                    None if r.candidate is None else r.candidate.exit_code,
                    "failures": r.failures, "notes": r.notes,
                    "observation": _observation_report(r.candidate),
@@ -818,7 +1011,20 @@ def build_report(results, mode, binary, reference):
 
 
 def run_case(case, target, reference=None, *, default_timeout=DEFAULT_TIMEOUT, keep_failed=None):
-    """Run one case in single mode (reference None) or differential mode. Never raises."""
+    """Run one case in single mode (reference None) or differential mode. Never raises.
+    A failed case with retries=1 runs once more; a pass on the second run is reported with a note."""
+    if not case.retries:
+        return _run_case_once(case, target, reference, default_timeout, keep_failed)
+    first = _run_case_once(case, target, reference, default_timeout, None)
+    if first.status != "FAIL":
+        return first
+    second = _run_case_once(case, target, reference, default_timeout, keep_failed)
+    second.retried = True
+    second.notes.insert(0, "retry used; the first run failed: " + "; ".join(first.failures[:3]))
+    return second
+
+
+def _run_case_once(case, target, reference, default_timeout, keep_failed):
     here = current_platform()
     if case.platforms is not None and here not in case.platforms:
         return CaseResult(case.id, "SKIP", notes=[f"platform {here} is not in {sorted(case.platforms)}"])
