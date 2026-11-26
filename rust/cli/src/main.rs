@@ -32,6 +32,11 @@ mod public_result;
     expect(dead_code, reason = "the output formats are wired into main later")
 )]
 mod sidecar;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the output formats are wired into main later")
+)]
+mod textfmt;
 
 fn main() -> ExitCode {
     // A failed write has nowhere else to go; the exit status carries the result.
