@@ -5,6 +5,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 mod godebug;
+mod version;
 
 fn main() -> ExitCode {
     // A failed write has nowhere else to go; the exit status carries the result.
