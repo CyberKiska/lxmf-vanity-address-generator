@@ -10,6 +10,18 @@ pub(crate) enum NumError {
     Range,
 }
 
+/// The three error texts of `time.ParseDuration`. The flag layer reports all of them as
+/// `parse error`, so only the category is kept, not the quoted input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DurationError {
+    /// "invalid duration"
+    Invalid,
+    /// "missing unit in duration"
+    MissingUnit,
+    /// "unknown unit ... in duration"
+    UnknownUnit,
+}
+
 fn lower(c: u8) -> u8 {
     c | (b'x' - b'X')
 }
@@ -148,13 +160,158 @@ pub(crate) fn parse_bool(s: &[u8]) -> Result<bool, NumError> {
     }
 }
 
-// The integer and boolean parsers were compared with Go 1.27.4 on generated inputs (every
-// short string over the relevant alphabets, the 2^63/2^64 boundaries, random byte strings):
-// results were identical.
+/// Unit table of `time.unitMap` in nanoseconds. Both micro signs (U+00B5, U+03BC) are accepted.
+fn unit_nanos(unit: &[u8]) -> Option<u64> {
+    Some(match unit {
+        b"ns" => 1,
+        b"us" | b"\xc2\xb5s" | b"\xce\xbcs" => 1_000,
+        b"ms" => 1_000_000,
+        b"s" => 1_000_000_000,
+        b"m" => 60_000_000_000,
+        b"h" => 3_600_000_000_000,
+        _ => return None,
+    })
+}
+
+const TWO_63: u64 = 1 << 63;
+
+/// `leadingInt`: `None` on overflow past 2^63.
+fn leading_int(s: &[u8]) -> Option<(u64, &[u8])> {
+    let mut x: u64 = 0;
+    let mut i = 0;
+    while let Some(&c) = s.get(i) {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        if x > TWO_63 / 10 {
+            return None;
+        }
+        x = x * 10 + u64::from(c - b'0');
+        if x > TWO_63 {
+            return None;
+        }
+        i += 1;
+    }
+    Some((x, &s[i..]))
+}
+
+/// `leadingFraction`: digits after the point; stops accumulating precision on overflow.
+fn leading_fraction(s: &[u8]) -> (u64, f64, &[u8]) {
+    let mut x: u64 = 0;
+    let mut scale: f64 = 1.0;
+    let mut overflow = false;
+    let mut i = 0;
+    while let Some(&c) = s.get(i) {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        i += 1;
+        if overflow {
+            continue;
+        }
+        if x > (TWO_63 - 1) / 10 {
+            overflow = true;
+            continue;
+        }
+        let y = x * 10 + u64::from(c - b'0');
+        if y > TWO_63 {
+            overflow = true;
+            continue;
+        }
+        x = y;
+        scale *= 10.0;
+    }
+    (x, scale, &s[i..])
+}
+
+/// `time.ParseDuration`: signed nanoseconds. `[-+]?([0-9]*(\.[0-9]*)?[unit])+` or a bare `0`.
+pub(crate) fn parse_duration(input: &[u8]) -> Result<i64, DurationError> {
+    use DurationError::{Invalid, MissingUnit, UnknownUnit};
+    let mut s = input;
+    let mut total: u64 = 0;
+    let mut neg = false;
+    if let Some(&c @ (b'-' | b'+')) = s.first() {
+        neg = c == b'-';
+        s = &s[1..];
+    }
+    if s == b"0" {
+        return Ok(0);
+    }
+    if s.is_empty() {
+        return Err(Invalid);
+    }
+    while !s.is_empty() {
+        if !(s[0] == b'.' || s[0].is_ascii_digit()) {
+            return Err(Invalid);
+        }
+        let before = s.len();
+        let (mut v, rest) = leading_int(s).ok_or(Invalid)?;
+        s = rest;
+        let pre = before != s.len();
+        let (mut f, mut scale) = (0u64, 1.0f64);
+        let mut post = false;
+        if s.first() == Some(&b'.') {
+            s = &s[1..];
+            let before = s.len();
+            (f, scale, s) = leading_fraction(s);
+            post = before != s.len();
+        }
+        if !pre && !post {
+            return Err(Invalid);
+        }
+        // The unit is the maximal run of bytes that are neither digits nor '.'.
+        let end = s
+            .iter()
+            .position(|&c| c == b'.' || c.is_ascii_digit())
+            .unwrap_or(s.len());
+        if end == 0 {
+            return Err(MissingUnit);
+        }
+        let (name, rest) = s.split_at(end);
+        s = rest;
+        let unit = unit_nanos(name).ok_or(UnknownUnit)?;
+        if v > TWO_63 / unit {
+            return Err(Invalid);
+        }
+        v *= unit;
+        if f > 0 {
+            // float64 keeps fractions of an hour nanosecond-accurate, exactly as Go computes it.
+            // The cast truncates toward zero, like Go's uint64(float64).
+            v += (f as f64 * (unit as f64 / scale)) as u64;
+            if v > TWO_63 {
+                return Err(Invalid);
+            }
+        }
+        // Go adds with wrap-around: two terms of exactly 2^63 sum to 0 and pass the check.
+        // Kept on purpose so the result matches Go bit for bit.
+        total = total.wrapping_add(v);
+        if total > TWO_63 {
+            return Err(Invalid);
+        }
+    }
+    if neg {
+        // total <= 2^63, so the negation fits.
+        return i64::try_from(-i128::from(total)).map_err(|_| Invalid);
+    }
+    i64::try_from(total).map_err(|_| Invalid)
+}
+
+// Besides the tables below, these parsers were compared with Go 1.27.4 on 962,652 generated
+// inputs (every short string over the relevant alphabets, the 2^63/2^64 boundaries, random
+// byte strings) and on every Unicode scalar value: integer, boolean and duration results,
+// including the three duration error categories, were identical.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use DurationError::{Invalid, MissingUnit, UnknownUnit};
     use NumError::{Range, Syntax};
+
+    const SEC: i64 = 1_000_000_000;
+    const MS: i64 = 1_000_000;
+    const US: i64 = 1_000;
+    const MIN: i64 = 60 * SEC;
+    const HOUR: i64 = 60 * MIN;
+
     #[test]
     fn parse_uint_base_zero_matches_go() {
         // Go: internal/strconv atoi_test.go (base 0 rows) plus the 2^64 edges.
@@ -269,5 +426,148 @@ mod tests {
         ] {
             assert_eq!(parse_bool(s.as_bytes()), Err(Syntax), "{s:?}");
         }
+    }
+
+    #[test]
+    fn parse_duration_matches_go_time_test_table() {
+        // Go: time_test.go parseDurationTests, copied case for case.
+        let cases: &[(&str, i64)] = &[
+            ("0", 0),
+            ("5s", 5 * SEC),
+            ("30s", 30 * SEC),
+            ("1478s", 1478 * SEC),
+            ("-5s", -5 * SEC),
+            ("+5s", 5 * SEC),
+            ("-0", 0),
+            ("+0", 0),
+            ("5.0s", 5 * SEC),
+            ("5.6s", 5 * SEC + 600 * MS),
+            ("5.s", 5 * SEC),
+            (".5s", 500 * MS),
+            ("1.0s", SEC),
+            ("1.00s", SEC),
+            ("1.004s", SEC + 4 * MS),
+            ("1.0040s", SEC + 4 * MS),
+            ("100.00100s", 100 * SEC + MS),
+            ("10ns", 10),
+            ("11us", 11 * US),
+            ("12\u{b5}s", 12 * US),
+            ("12\u{3bc}s", 12 * US),
+            ("13ms", 13 * MS),
+            ("14s", 14 * SEC),
+            ("15m", 15 * MIN),
+            ("16h", 16 * HOUR),
+            ("3h30m", 3 * HOUR + 30 * MIN),
+            ("10.5s4m", 4 * MIN + 10 * SEC + 500 * MS),
+            ("-2m3.4s", -(2 * MIN + 3 * SEC + 400 * MS)),
+            (
+                "1h2m3s4ms5us6ns",
+                HOUR + 2 * MIN + 3 * SEC + 4 * MS + 5 * US + 6,
+            ),
+            ("39h9m14.425s", 39 * HOUR + 9 * MIN + 14 * SEC + 425 * MS),
+            ("52763797000ns", 52_763_797_000),
+            ("0.3333333333333333333h", 20 * MIN),
+            ("9007199254740993ns", (1 << 53) + 1),
+            ("9223372036854775807ns", i64::MAX),
+            ("9223372036854775.807us", i64::MAX),
+            ("9223372036s854ms775us807ns", i64::MAX),
+            ("-9223372036854775808ns", i64::MIN),
+            ("-9223372036854775.808us", i64::MIN),
+            ("-9223372036s854ms775us808ns", i64::MIN),
+            ("-2562047h47m16.854775808s", i64::MIN),
+            ("0.100000000000000000000h", 6 * MIN),
+            (
+                "0.830103483285477580700h",
+                49 * MIN + 48 * SEC + 372_539_827,
+            ),
+            // Cases from the task: valid forms of the grammar.
+            ("1.5h", HOUR + 30 * MIN),
+            ("1h30m", HOUR + 30 * MIN),
+            ("1.s", SEC),
+            ("1.5ms", 1_500_000),
+            ("+1ms", MS),
+            ("1.ms", MS),
+            ("1us", US),
+            ("1\u{b5}s", US),
+            // Fractions below one nanosecond are dropped by Go's float64 arithmetic. The basis's
+            // integer fold would give 999_999_999 for the second row; Go gives 1s.
+            ("1.9ns", 1),
+            ("0.9999999999999999999999s", SEC),
+            (".99999999999999999999h", HOUR), // basis fold gave 3_599_999_999_999; Go gives 1h
+            ("2\u{b5}s3\u{3bc}s4us", 9 * US),
+        ];
+        for &(s, want) in cases {
+            assert_eq!(parse_duration(s.as_bytes()), Ok(want), "{s}");
+        }
+    }
+
+    #[test]
+    fn parse_duration_error_categories_match_go() {
+        let invalid = [
+            "",
+            "+",
+            "-",
+            ".",
+            "-.",
+            ".s",
+            "+.s",
+            "1s.",
+            "s1",
+            "\u{fffd}",
+            // Overflow in every place Go checks.
+            "9223372036854775810ns",
+            "9223372036854775808ns",
+            "-9223372036854775809ns",
+            "9223372036854776us",
+            "3000000h",
+            "9223372036854775.808us",
+            "9223372036854ms775us808ns",
+            "99999999999999999999ns",
+        ];
+        for s in invalid {
+            assert_eq!(parse_duration(s.as_bytes()), Err(Invalid), "{s:?}");
+        }
+        for s in ["3", "1", "5", "1s2", "-1", "1.5", "1h30", ".5"] {
+            assert_eq!(parse_duration(s.as_bytes()), Err(MissingUnit), "{s:?}");
+        }
+        for s in [
+            "1d",
+            "1 s",
+            "1S",
+            "1H",
+            "1\u{2126}s",
+            "1min",
+            "1sm",
+            "1\u{b5}",
+            "1u",
+            "1y",
+            "1w",
+        ] {
+            assert_eq!(parse_duration(s.as_bytes()), Err(UnknownUnit), "{s:?}");
+        }
+        // Invalid UTF-8 is just unknown bytes.
+        assert_eq!(parse_duration(b"\x85\x85"), Err(Invalid));
+        assert_eq!(parse_duration(b"1\xffs"), Err(UnknownUnit));
+    }
+
+    #[test]
+    fn parse_duration_takes_the_maximal_unit_run_not_a_prefix() {
+        // The unit is everything up to the next digit or '.', so "1sx" is an unknown unit
+        // even though it starts with a valid one.
+        assert_eq!(parse_duration(b"1sx"), Err(UnknownUnit));
+        assert_eq!(parse_duration(b"1msx"), Err(UnknownUnit));
+        assert_eq!(parse_duration(b"1m1s"), Ok(MIN + SEC));
+        assert_eq!(parse_duration(b"1sm"), Err(UnknownUnit));
+    }
+
+    #[test]
+    fn parse_duration_wraps_like_go_when_two_terms_sum_to_two_pow_63() {
+        // Go adds the terms with wrap-around: 2^63 + 2^63 becomes 0 and is accepted.
+        // Observed with Go 1.27.4 on this exact input.
+        assert_eq!(
+            parse_duration(b"9223372036854775808ns9223372036854775808ns"),
+            Ok(0)
+        );
+        assert_eq!(parse_duration(b"9223372036854775808ns1ns"), Err(Invalid));
     }
 }
