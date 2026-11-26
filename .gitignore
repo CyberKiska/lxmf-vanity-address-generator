@@ -13,6 +13,7 @@ lxmf-vanity-darwin-*
 identity
 identity.*
 !identity.go
+!rust/core/src/identity.rs
 test_identity*
 
 # Go build artifacts
