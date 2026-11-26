@@ -8,15 +8,9 @@ mod godebug;
 mod version;
 
 // Not called from `main` until the entry point is wired up.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "argument handling is wired into main later")
-)]
+#[expect(dead_code, reason = "argument handling is wired into main later")]
+mod args;
 mod goparse;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "argument handling is wired into main later")
-)]
 mod goquote;
 
 fn main() -> ExitCode {
