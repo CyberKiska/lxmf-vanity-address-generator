@@ -9,6 +9,7 @@
 #![deny(unsafe_code)]
 
 use std::ffi::OsStr;
+use std::fmt;
 use std::fs::File;
 use std::io;
 use std::path::Path;
@@ -25,7 +26,7 @@ mod windows;
 // `file_meta`, `harden_process`, `stderr_is_char_device`, `effective_uid`).
 #[cfg(windows)]
 mod imp {
-    use super::FileMeta;
+    use super::{FileMeta, HardenError};
     use std::ffi::OsStr;
     use std::fs::File;
     use std::io;
@@ -58,6 +59,11 @@ mod imp {
 
     pub(crate) fn file_meta(_: &File) -> io::Result<FileMeta> {
         unsupported()
+    }
+    // Go's harden_other.go is `func hardenProcess() error { return nil }`:
+    // nothing to do on Windows, and no "hardening unavailable" notice.
+    pub(crate) fn harden_process() -> Result<(), HardenError> {
+        Ok(())
     }
 }
 
@@ -169,4 +175,42 @@ fn contains_separator(name: &OsStr) -> bool {
 /// Metadata of an open file (`fstat`).
 pub fn file_meta(file: &File) -> io::Result<FileMeta> {
     imp::file_meta(file)
+}
+
+/// Every error [`harden_process`] met. Hardening is best effort: the caller
+/// prints `Notice: best-effort process hardening unavailable: <error>` and
+/// continues. Several errors are joined with newlines, like Go's
+/// `errors.Join`.
+#[derive(Debug)]
+pub struct HardenError(Vec<io::Error>);
+
+impl HardenError {
+    // Unix only for now: the Windows hardening never fails (as in Go), so the
+    // Windows layer can drop this cfg if it ever collects errors.
+    #[cfg(unix)]
+    pub(crate) fn new(errors: Vec<io::Error>) -> HardenError {
+        HardenError(errors)
+    }
+}
+
+impl fmt::Display for HardenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, err) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str("\n")?;
+            }
+            write!(f, "{err}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for HardenError {}
+
+/// Best-effort process hardening: lowers the soft core-file limit to 0 (the
+/// hard limit is kept) and, on Linux, clears the dumpable flag. Every step is
+/// tried even when an earlier one failed. Call it from `main` only, never in
+/// a test process (use the `harden_probe` helper binary).
+pub fn harden_process() -> Result<(), HardenError> {
+    imp::harden_process()
 }
