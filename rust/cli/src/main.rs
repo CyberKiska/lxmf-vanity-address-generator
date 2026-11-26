@@ -4,6 +4,11 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the output formats are wired into main later")
+)]
+mod encode;
 mod godebug;
 mod version;
 
@@ -12,6 +17,26 @@ mod version;
 mod args;
 mod goparse;
 mod goquote;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the output formats are wired into main later")
+)]
+mod jsonw;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the output formats are wired into main later")
+)]
+mod public_result;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the output formats are wired into main later")
+)]
+mod sidecar;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the output formats are wired into main later")
+)]
+mod textfmt;
 
 fn main() -> ExitCode {
     // A failed write has nowhere else to go; the exit status carries the result.
