@@ -22,6 +22,8 @@ python3 -I conformance/run.py --binary ./candidate --reference ./reference
 | `--binary PATH` | The binary under test (the candidate). Required, except with `--list`. |
 | `--reference PATH` | A second binary. Its presence selects differential mode. The same path as `--binary` gives a self-differential run. |
 | `--cases GLOB ...` | Only cases whose id matches a glob, for example `'smoke.*'`. May be repeated. |
+| `--tag TAG` | Only cases that carry this tag. May be repeated: a case matches when it carries any of the given tags. Combines with `--cases` (both must match). |
+| `--exclude-tag TAG` | Leave out cases that carry this tag. May be repeated: a case is left out when it carries any of the given tags. |
 | `--list` | Print the selected case ids and exit. |
 | `--report FILE.json` | Write a JSON report: id, status, exit code, failures, notes and the normalized observations of each case. It never contains private keys or sidecar contents. |
 | `--keep-failed DIR` | Keep the working directories of failed cases under `DIR/<case id>/<candidate or reference>`. `DIR` must be outside the repository. They may hold disposable identities. |
@@ -34,6 +36,18 @@ The harness unit tests use a fake program written in Python, so they need no rea
 ```bash
 python3 -m unittest discover -p '*_test.py'
 ```
+
+## Continuous integration
+
+`.github/workflows/build-binaries.yml` runs the suite in single mode on the five native targets (linux/amd64, linux/arm64, darwin/arm64, windows/amd64, windows/arm64), with the job's read-only `contents` permission, no secrets and no cache.
+
+- **Current build.** The `smoke` job, after it has verified the digest of the downloaded artifact and run `scripts/smoke_artifact.py`, executes only that artifact:
+  - `python -I conformance/run.py --binary <artifact> --exclude-tag slow --report conformance-<os>-<arch>.json` runs every case except the `slow` ones;
+  - a second step runs `--tag slow` (the signal and stream cases) and may repeat the whole set once, writing `conformance-slow-<os>-<arch>-attempt-<n>.json`. Cases that are not for the platform report `SKIP`: on Windows the slow cases skip themselves.
+  - The reports are uploaded as the artifact `conformance-<os>-<arch>`. They hold no private key, identity file or sidecar contents.
+- **Pinned v1 reference.** The `pinned-reference` job, which does not run on pull requests from forks, downloads this target's release asset named in `conformance/reference.json` from the repository's own `releases/download/<tag>/` URL, checks its `sha256` against that file, and runs the same two steps against those bytes (reports `conformance-pinned-*`). While `conformance/reference.json` does not exist, the job reports a notice (`Pinned v1 reference skipped`) and a step summary instead of running.
+
+To reproduce the first step locally, put a binary where CI would, and run the command above from the repository root. `python3 -m unittest workflow_test` checks the workflow's privileges and runs the download logic against a local release directory.
 
 ## How a case runs
 
