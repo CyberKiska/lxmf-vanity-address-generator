@@ -1,10 +1,13 @@
 """Parse workflows and execute gating logic with disposable command stubs."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -72,6 +75,126 @@ class WorkflowPolicyTests(unittest.TestCase):
         attestation = next(s for s in jobs["attest"]["steps"] if s.get("uses", "").startswith("actions/attest@"))
         self.assertCountEqual(["artifacts/" + name for name in files],
                               attestation["with"]["subject-path"].split())
+
+    def test_conformance_steps_run_the_verified_artifact_isolated_on_every_target(self):
+        workflow = self.workflows["build-binaries"]
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        job = workflow["jobs"]["smoke"]
+        steps = job["steps"]
+        verify = next(i for i, s in enumerate(steps) if s.get("id") == "verify")
+        self.assertIn("scripts/smoke_artifact.py", steps[verify]["run"])
+        conformance = [(i, s) for i, s in enumerate(steps) if "conformance/run.py" in s.get("run", "")]
+        self.assertEqual(len(conformance), 2)
+        binary = ("artifact/lxmf-vanity-${{ matrix.goos }}-${{ matrix.goarch }}"
+                  "${{ matrix.goos == 'windows' && '.exe' || '' }}")
+        for index, step in conformance:
+            self.assertGreater(index, verify)
+            self.assertEqual(step["shell"], "bash")
+            self.assertEqual(step["env"]["BINARY"], binary)
+            # No matrix condition: the step runs on every entry, and only after a verified artifact.
+            self.assertNotIn("matrix", step["if"])
+            self.assertIn("steps.verify.outcome == 'success'", step["if"])
+            self.assertIn('python -I conformance/run.py --binary "$BINARY"', step["run"])
+            self.assertNotIn("go ", step["run"].replace("go-", ""))
+        full, slow = (step["run"] for _, step in conformance)
+        self.assertIn("--exclude-tag slow", full)
+        self.assertIn("--report", full)
+        self.assertNotIn("--tag slow", full)
+        self.assertIn("--tag slow", slow)
+        self.assertEqual(slow.count("for attempt in 1 2; do"), 1)
+        upload = steps[conformance[-1][0] + 1]
+        self.assertTrue(upload["uses"].startswith("actions/upload-artifact@"))
+        self.assertEqual(upload["with"]["path"], "conformance-*.json")
+        # The release and attestation jobs download "lxmf-vanity-*" bundles; reports must not match.
+        self.assertTrue(upload["with"]["name"].startswith("conformance-"))
+        self.assertNotIn("conformance-", workflow["jobs"]["release"]["steps"][0]["with"]["pattern"])
+
+    def test_pinned_reference_job_is_read_only_secretless_and_skips_forks(self):
+        workflow = self.workflows["build-binaries"]
+        job = workflow["jobs"]["pinned-reference"]
+        smoke = workflow["jobs"]["smoke"]
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", job["if"])
+        self.assertNotIn("pinned-reference", workflow["jobs"]["attest"]["needs"])
+        self.assertEqual([(m["goos"], m["goarch"], m["runner"]) for m in job["strategy"]["matrix"]["include"]],
+                         [(m["goos"], m["goarch"], m["runner"]) for m in smoke["strategy"]["matrix"]["include"]])
+        text = json.dumps([job, smoke])
+        for forbidden in ("secrets.", "token", "actions/cache", "go run", "pull_request_target"):
+            self.assertNotIn(forbidden, text)
+        self.assertEqual(job["env"]["RELEASE_URL"], "https://github.com/${{ github.repository }}/releases/download")
+        for name in ("pinned-reference", "smoke", "build"):
+            for step in workflow["jobs"][name]["steps"]:
+                uses = step.get("uses", "./")
+                self.assertTrue(uses.startswith("./") or re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", uses), uses)
+        steps = {s.get("id"): s for s in job["steps"] if "id" in s}
+        full, slow = (s for s in job["steps"] if "conformance/run.py" in s.get("run", ""))
+        for step in (full, slow):
+            self.assertIn('python -I conformance/run.py --binary "$binary"', step["run"])
+        self.assertEqual(full["if"], "steps.record.outputs.present == 'true'")
+        self.assertIn("steps.download.outcome == 'success'", slow["if"])
+        self.assertEqual(steps["download"]["if"], "steps.record.outputs.present == 'true'")
+
+    def pinned_step(self, name):
+        return next(s for s in self.workflows["build-binaries"]["jobs"]["pinned-reference"]["steps"]
+                    if s.get("name", "").startswith(name))
+
+    def run_pinned(self, step, root, **env):
+        shim = Path(root, "bin")
+        shim.mkdir(exist_ok=True)
+        (shim / "python").write_text(f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "$@"\n', newline="\n")
+        (shim / "python").chmod(0o700)
+        env = dict(os.environ, **env)
+        return subprocess.run([BASH, "-c", 'export PATH="$PWD/bin:$PATH"\n' + step["run"]], cwd=root, env=env,
+                              capture_output=True, text=True, timeout=60)
+
+    def test_pinned_reference_is_skipped_with_a_notice_until_the_record_exists(self):
+        step = self.pinned_step("Check for the pinned")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = dict(GITHUB_OUTPUT=str(root / "out"), GITHUB_STEP_SUMMARY=str(root / "summary"))
+            (root / "conformance").mkdir()
+            result = self.run_pinned(step, root, **env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("::notice title=Pinned v1 reference skipped::", result.stdout)
+            self.assertEqual((root / "out").read_text(), "present=false\n")
+            self.assertIn("skipped", (root / "summary").read_text())
+            (root / "conformance/reference.json").write_text("{}")
+            (root / "out").unlink()
+            result = self.run_pinned(step, root, **env)
+            self.assertEqual((root / "out").read_text(), "present=true\n")
+            self.assertNotIn("::notice", result.stdout)
+
+    def test_pinned_download_accepts_only_the_recorded_bytes_and_names(self):
+        step = self.pinned_step("Download the pinned")
+        data = b"pinned release bytes"
+        good = hashlib.sha256(data).hexdigest()
+        cases = (  # (target os, tag, file, sha256, passes)
+            ("linux", "v1.0.0", "lxmf-vanity-linux-amd64", good, True),
+            ("windows", "v1.0.0", "lxmf-vanity-windows-amd64.exe", good, True),
+            ("linux", "v1.0.0", "lxmf-vanity-linux-amd64", hashlib.sha256(b"other").hexdigest(), False),
+            ("linux", "v1.0.0", "lxmf-vanity-linux-amd64", good.upper(), False),
+            ("linux", "v1.0.0", "lxmf-vanity-linux-arm64", good, False),
+            ("linux", "v1.0.0", "../lxmf-vanity-linux-amd64", good, False),
+            ("linux", "v1.0.0/../x", "lxmf-vanity-linux-amd64", good, False),
+            ("windows", "v1.0.0", "lxmf-vanity-windows-amd64", good, False),
+        )
+        for target_os, tag, name, digest, passes in cases:
+            with self.subTest(target_os=target_os, tag=tag, name=name, passes=passes), \
+                    tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "conformance").mkdir()
+                (root / "releases/v1.0.0").mkdir(parents=True)
+                suffix = ".exe" if target_os == "windows" else ""
+                (root / f"releases/v1.0.0/lxmf-vanity-{target_os}-amd64{suffix}").write_bytes(data)
+                record = {"tag": tag, "artifacts": {f"{target_os}-amd64": {"file": name, "sha256": digest}}}
+                (root / "conformance/reference.json").write_text(json.dumps(record))
+                result = self.run_pinned(step, root, TARGET_OS=target_os, TARGET_ARCH="amd64",
+                                         RELEASE_URL=(root / "releases").as_uri())
+                saved = root / "pinned" / f"lxmf-vanity-{target_os}-amd64{suffix}"
+                self.assertEqual(result.returncode == 0, passes, result.stderr)
+                self.assertEqual(saved.is_file(), passes)
+                if passes:
+                    self.assertEqual(saved.read_bytes(), data)
 
     def test_core_and_interop_gates_fail_closed(self):
         steps = self.workflows["reference-compat"]["jobs"]["reference"]["steps"]
