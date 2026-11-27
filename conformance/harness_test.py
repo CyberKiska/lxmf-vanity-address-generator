@@ -2,6 +2,7 @@
 
 import base64
 import contextlib
+import dataclasses
 import hashlib
 import io
 import json
@@ -797,6 +798,33 @@ class EntryPointTests(FakeBinaryTest):
         self.assertIn("summary: 2 cases", out)
         status, out, _ = self.main("--binary", self.binary(), "--cases", "unit.a1", "--cases", "unit.b1", cases=cases)
         self.assertIn("summary: 2 cases", out)
+
+    def test_tag_and_exclude_tag_filter_and_combine_with_case_globs(self):
+        def tagged(name, *tags):
+            return dataclasses.replace(self.passing(name), tags=frozenset(tags))
+        cases = [tagged("a", "slow"), tagged("b", "slow", "unix"), tagged("c", "unix"), tagged("d")]
+
+        def listed(*argv):
+            status, out, _ = self.main("--list", *argv, cases=cases)
+            return status, [line.split("\t")[0] for line in out.splitlines()]
+        self.assertEqual(listed("--exclude-tag", "slow"), (0, ["unit.c", "unit.d"]))
+        self.assertEqual(listed("--tag", "slow"), (0, ["unit.a", "unit.b"]))
+        self.assertEqual(listed("--tag", "slow", "--tag", "unix"), (0, ["unit.a", "unit.b", "unit.c"]))
+        self.assertEqual(listed("--exclude-tag", "slow", "--exclude-tag", "unix"), (0, ["unit.d"]))
+        self.assertEqual(listed("--tag", "slow", "--exclude-tag", "unix"), (0, ["unit.a"]))
+        self.assertEqual(listed("--tag", "slow", "--cases", "unit.b"), (0, ["unit.b"]))
+        self.assertEqual(listed("--tag", "none"), (0, []))
+        # The selection also drives a real run, and an empty selection is a usage error.
+        status, out, _ = self.main("--binary", self.binary(), "--exclude-tag", "slow", cases=cases)
+        self.assertEqual(status, 0)
+        self.assertIn("summary: 2 cases", out)
+        self.assertEqual(self.main("--binary", self.binary(), "--tag", "none", cases=cases)[0], 2)
+
+    def test_registered_slow_cases_are_selectable_and_the_rest_are_not_slow(self):
+        slow = run.select(load_cases(), run.parse_args(["--list", "--tag", "slow"]))
+        self.assertTrue(slow and all(c.id.startswith("signals_streams.") for c in slow))
+        rest = run.select(load_cases(), run.parse_args(["--list", "--exclude-tag", "slow"]))
+        self.assertEqual(len(slow) + len(rest), len(load_cases()))
 
     def test_differential_mode_prints_the_mode_and_compares(self):
         different = Case(id="unit.d", description="differs", expect=Expectation(exit_code=None),
