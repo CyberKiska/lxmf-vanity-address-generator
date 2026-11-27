@@ -151,6 +151,7 @@ jobs:
           name: lxmf-vanity-${{ matrix.goos }}-${{ matrix.goarch }}
           path: artifact
       - name: Verify digests and execute the downloaded artifact (never rebuild)
+        id: verify
         env:
           TARGET_OS: ${{ matrix.goos }}
           TARGET_ARCH: ${{ matrix.goarch }}
@@ -183,6 +184,140 @@ jobs:
           set -euo pipefail
           make build BINARY=rebuilt
           cmp original/lxmf-vanity-linux-amd64 rebuilt
+      # The conformance steps execute only the digest-verified artifact and repository Python.
+      - name: Conformance suite (all cases except slow)
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
+        shell: bash
+        env:
+          BINARY: artifact/lxmf-vanity-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
+          REPORT: conformance-${{ matrix.goos }}-${{ matrix.goarch }}.json
+        run: python -I conformance/run.py --binary "$BINARY" --exclude-tag slow --report "$REPORT"
+      - name: Conformance suite (slow cases, one retry)
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
+        shell: bash
+        env:
+          BINARY: artifact/lxmf-vanity-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
+          REPORT_PREFIX: conformance-slow-${{ matrix.goos }}-${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2; do
+            if python -I conformance/run.py --binary "$BINARY" --tag slow --report "$REPORT_PREFIX-attempt-$attempt.json"; then
+              exit 0
+            fi
+            echo "::warning::Slow conformance cases failed on attempt $attempt of 2."
+          done
+          exit 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: conformance-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: ignore
+          path: conformance-*.json
+          retention-days: 30
+
+  pinned-reference:
+    name: Pinned v1 reference (${{ matrix.goos }}/${{ matrix.goarch }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64, runner: ubuntu-latest}
+          - {goos: linux, goarch: arm64, runner: ubuntu-24.04-arm}
+          - {goos: darwin, goarch: arm64, runner: macos-15}
+          - {goos: windows, goarch: amd64, runner: windows-latest}
+          - {goos: windows, goarch: arm64, runner: windows-11-arm}
+    env:
+      TARGET_OS: ${{ matrix.goos }}
+      TARGET_ARCH: ${{ matrix.goarch }}
+      RELEASE_URL: https://github.com/${{ github.repository }}/releases/download
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.7'
+      - name: Check for the pinned reference record
+        id: record
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f conformance/reference.json ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            message='conformance/reference.json does not exist yet, so the pinned v1 reference run was skipped.'
+            echo "::notice title=Pinned v1 reference skipped::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Download the pinned release asset and verify its sha256
+        id: download
+        if: steps.record.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -I - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          import urllib.request
+
+          target = f"{os.environ['TARGET_OS']}-{os.environ['TARGET_ARCH']}"
+          suffix = ".exe" if os.environ["TARGET_OS"] == "windows" else ""
+          record = json.loads(Path("conformance/reference.json").read_text(encoding="utf-8"))
+          tag = record["tag"]
+          name = record["artifacts"][target]["file"]
+          digest = record["artifacts"][target]["sha256"]
+          if not (re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag) and name == f"lxmf-vanity-{target}{suffix}"
+                  and re.fullmatch(r"[0-9a-f]{64}", digest)):
+              sys.exit("conformance/reference.json: unexpected tag, file name or sha256")
+          with urllib.request.urlopen(f"{os.environ['RELEASE_URL']}/{tag}/{name}", timeout=120) as response:
+              data = response.read(64 << 20)  # larger than any release binary; a cut-off file fails the digest
+          if hashlib.sha256(data).hexdigest() != digest:
+              sys.exit(f"{name}: sha256 does not match conformance/reference.json")
+          Path("pinned").mkdir()
+          path = Path("pinned") / name
+          path.write_bytes(data)
+          path.chmod(0o755)
+          print(f"Verified {name} ({tag}, sha256 {digest})")
+          PY
+      - name: Pinned reference conformance (all cases except slow)
+        if: steps.record.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="pinned/lxmf-vanity-$TARGET_OS-$TARGET_ARCH"
+          if [ "$TARGET_OS" = windows ]; then binary="$binary.exe"; fi
+          python -I conformance/run.py --binary "$binary" --exclude-tag slow --report "conformance-pinned-$TARGET_OS-$TARGET_ARCH.json"
+      - name: Pinned reference conformance (slow cases, one retry)
+        if: ${{ !cancelled() && steps.download.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="pinned/lxmf-vanity-$TARGET_OS-$TARGET_ARCH"
+          if [ "$TARGET_OS" = windows ]; then binary="$binary.exe"; fi
+          for attempt in 1 2; do
+            if python -I conformance/run.py --binary "$binary" --tag slow --report "conformance-pinned-slow-$TARGET_OS-$TARGET_ARCH-attempt-$attempt.json"; then
+              exit 0
+            fi
+            echo "::warning::Slow conformance cases failed on attempt $attempt of 2."
+          done
+          exit 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: conformance-pinned-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: ignore
+          path: conformance-pinned-*.json
+          retention-days: 30
 
   attest:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
