@@ -1,0 +1,29 @@
+{
+  "tag": "v1.0.0",
+  "commit": "3777bade2cf944921b64378c4216cb3066cdc139",
+  "go_version": "go1.27.4",
+  "artifacts": {
+    "linux-amd64": {
+      "file": "lxmf-vanity-linux-amd64",
+      "sha256": "68e58b8c6dae561d77e26fad8e0bb25438a93f4436a3a10f490fb1b93c150801"
+    },
+    "linux-arm64": {
+      "file": "lxmf-vanity-linux-arm64",
+      "sha256": "a376a140f6de6032241b26c70536fc9b9e9c50512618d4af52a3ffb1a312eb16"
+    },
+    "darwin-arm64": {
+      "file": "lxmf-vanity-darwin-arm64",
+      "sha256": "e5fc95d1131f05907f0b1d0b8ed104125f828d209bdc02104c84d4bc53a81827"
+    },
+    "windows-amd64": {
+      "file": "lxmf-vanity-windows-amd64.exe",
+      "sha256": "fed35be7ea8da781478e0a8b4aeda2e6a8568056989453c4e237b67d6a4d225f"
+    },
+    "windows-arm64": {
+      "file": "lxmf-vanity-windows-arm64.exe",
+      "sha256": "635bf4e2de18242e01a4c5b7b9cad1b3fb81b1213704ccf5686178fab9427269"
+    }
+  },
+  "verified_on": "2026-11-28",
+  "verification": "sha256 + gh attestation verify"
+}
