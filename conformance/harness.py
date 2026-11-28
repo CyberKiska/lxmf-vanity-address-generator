@@ -82,11 +82,11 @@ class Num:
 
 
 class Masked:
-    """A value hidden by normalization. All masks are equal; number text is kept for notes."""
-    __slots__ = ("text",)
+    """A value hidden by normalization. All masks are equal; the text is kept for notes."""
+    __slots__ = ("text", "what")
 
-    def __init__(self, text=None):
-        self.text = text
+    def __init__(self, text=None, what="number text"):
+        self.text, self.what = text, what
 
     def __eq__(self, other):
         return isinstance(other, Masked)
@@ -709,7 +709,7 @@ def _normalize_json(obj, case, variants):
         elif key == "version":
             if not (isinstance(value, str) and value):
                 problems.append("version is not a non-empty string")
-            value = MASK
+            value = Masked(value if isinstance(value, str) and value else None, "version")
         elif key == "attempts" and case.attempts_nondeterministic:
             value = Masked(value.text if isinstance(value, Num) else None)
         elif key in HEX_LENGTHS:
@@ -916,7 +916,9 @@ def _cmp_json(a, b, path, diffs, notes):
         if a != b:
             diffs.append(f"json {path}: reference {a!r}, candidate {b!r}")
         elif a.text is not None and b.text is not None and a.text != b.text:
-            notes.append(f"json {path}: number text differs ({a.text} vs {b.text}); values are equal")
+            what = getattr(a, "what", "number text")  # Num has no label
+            tail = "only its presence is compared" if what == "version" else "values are equal"
+            notes.append(f"json {path}: {what} differs ({a.text} vs {b.text}); {tail}")
     elif type(a) is not type(b) or a != b:
         diffs.append(f"json {path}: reference {_short(a)}, candidate {_short(b)}")
 

@@ -2,7 +2,8 @@
 """Run the lxmf-vanity conformance cases against one binary, or compare two binaries.
 
     python3 -I conformance/run.py --binary PATH [--reference PATH] [--cases GLOB ...]
-                                  [--list] [--report FILE.json] [--keep-failed DIR] [--timeout SECONDS]
+                                  [--tag TAG ...] [--exclude-tag TAG ...] [--list] [--report FILE.json]
+                                  [--keep-failed DIR] [--timeout SECONDS]
 
 Exit status: 0 when every selected case passes, 1 when any fails, 2 on a usage error.
 """
@@ -26,6 +27,10 @@ def parse_args(argv):
     parser.add_argument("--reference", help="reference binary: run in differential mode")
     parser.add_argument("--cases", nargs="+", action="append", default=[], metavar="GLOB",
                         help="only cases whose id matches a glob, for example 'smoke.*'")
+    parser.add_argument("--tag", action="append", default=[], metavar="TAG",
+                        help="only cases that carry this tag (repeatable: any of the tags)")
+    parser.add_argument("--exclude-tag", action="append", default=[], metavar="TAG",
+                        help="leave out cases that carry this tag (repeatable: any of the tags)")
     parser.add_argument("--list", action="store_true", help="list the selected cases and exit")
     parser.add_argument("--report", metavar="FILE.json", help="write a JSON report (no secrets)")
     parser.add_argument("--keep-failed", metavar="DIR", help="keep the working directories of failed cases here")
@@ -37,6 +42,13 @@ def parse_args(argv):
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     return args
+
+
+def select(cases, args):
+    """Cases that match --cases, carry one of --tag (when given) and carry none of --exclude-tag."""
+    selected = harness.select_cases(cases, [g for group in args.cases for g in group])
+    return [c for c in selected
+            if (not args.tag or c.tags & set(args.tag)) and not c.tags & set(args.exclude_tag)]
 
 
 def describe(result):
@@ -55,7 +67,7 @@ def describe(result):
 def main(argv=None, cases=None):
     args = parse_args(argv)
     cases = load_cases() if cases is None else cases
-    selected = harness.select_cases(cases, [g for group in args.cases for g in group])
+    selected = select(cases, args)
     if args.list:
         for case in selected:
             print(f"{case.id}\t{case.description}")
