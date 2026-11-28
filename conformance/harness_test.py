@@ -30,6 +30,9 @@ OTHER_SECRET = hashlib.sha512(b"another unit test key").digest()
 FAKE = r'''
 import json, os, sys, time
 role = sys.argv[1]
+# Raw bytes: the harness compares them, so Windows must not turn \n into \r\n.
+sys.stdout.reconfigure(newline="")
+sys.stderr.reconfigure(newline="")
 args = sys.argv[2:]
 if "--inspect" in args:
     path = args[args.index("--inspect") + 1]
