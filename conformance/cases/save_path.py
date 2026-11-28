@@ -179,7 +179,9 @@ def refused(cid, description, args, error, *, setup=None, prefix_only=False, **k
                   json={"status": "failed", **QUIET, "notices": [], "attempts": 0, "generator": "segmented"})
     if prefix_only:  # the message after the prefix is operating-system text
         error = error.replace("{sep}", os.sep)  # only {tmp} is normalized in output; the separator is real
-        expect["check"] = lambda ctx, obs: ([] if obs.json["error"].startswith(error) else ["error text differs"])
+        # Checks see the raw observation, so normalize the temporary directory here too.
+        expect["check"] = lambda ctx, obs: ([] if harness._replace_tmp(obs.json["error"], harness._tmp_variants(ctx))
+                                            .startswith(error) else ["error text differs"])
         expect["stderr_regex"] = r"\AError: " + re.escape(error)
     else:
         expect["json"] = {**expect["json"], "error": error}
