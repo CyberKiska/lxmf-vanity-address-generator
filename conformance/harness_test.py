@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import importlib
 import shutil
 import signal
 import sys
@@ -29,10 +30,10 @@ OTHER_SECRET = hashlib.sha512(b"another unit test key").digest()
 # can make the reference and the candidate behave differently.
 FAKE = r'''
 import json, os, sys, time
-role = sys.argv[1]
 # Raw bytes: the harness compares them, so Windows must not turn \n into \r\n.
 sys.stdout.reconfigure(newline="")
 sys.stderr.reconfigure(newline="")
+role = sys.argv[1]
 args = sys.argv[2:]
 if "--inspect" in args:
     path = args[args.index("--inspect") + 1]
@@ -1132,6 +1133,27 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual([i for i in ids if i.startswith("smoke.")], ["smoke.help", "smoke.version", "smoke.version_json"])
         self.assertTrue(all(harness.CASE_ID.fullmatch(i) for i in ids))
+
+    def test_registry_loads_where_posix_only_signals_do_not_exist_and_those_cases_skip(self):
+        # Windows has no SIGHUP or SIGKILL: no case module may touch them while it is imported.
+        missing = [name for name in ("SIGHUP", "SIGKILL") if hasattr(signal, name)]
+        saved = {name: getattr(signal, name) for name in missing}
+        try:
+            for name in missing:
+                delattr(signal, name)
+            with mock.patch.dict(sys.modules):
+                for name in [m for m in sys.modules if m.startswith("conformance.cases")]:
+                    del sys.modules[name]
+                cases = importlib.import_module("conformance.cases").load_cases()
+        finally:
+            for name, value in saved.items():
+                setattr(signal, name, value)
+        signal_cases = [c for c in cases if c.id.startswith("signals_streams.")]
+        self.assertGreaterEqual(len(signal_cases), 10)
+        with mock.patch.object(harness, "current_platform", return_value="windows"):
+            for case in signal_cases:
+                result = harness.run_case(case, harness.Target(("no-such-binary",), "x"))
+                self.assertEqual(result.status, "SKIP", case.id)
 
     def test_select_cases_uses_globs(self):
         cases = load_cases()

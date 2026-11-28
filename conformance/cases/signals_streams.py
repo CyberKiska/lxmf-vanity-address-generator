@@ -67,10 +67,10 @@ def saved_files_verify(ctx, obs):
 
 # --- Cancellation by signal during the search --------------------------------------------------------
 
-def cancelled_by(signum):
+def cancelled_by(name):
     def interact(ctx, session):
         session.wait_line(SEARCH_STARTED, WAIT)
-        session.signal(signum)
+        session.signal(getattr(signal, name))  # resolved at run time: Windows has no SIGHUP
         session.wait_exit(EXIT_WITHIN)
     return interact
 
@@ -79,10 +79,10 @@ CANCELLED = Expectation(exit_code=130, files={}, json={"status": "cancelled", "e
 for name in ("SIGINT", "SIGTERM", "SIGHUP"):
     add(f"cancel.{name.lower()}", f"{name} during the search exits 130 with status cancelled within 5 s and creates nothing",
         args=("--prefix", "ffffffffffff", "--dry-run", "--workers", "2", "--json"),
-        interact=cancelled_by(getattr(signal, name)), expect=CANCELLED, attempts_nondeterministic=True)
+        interact=cancelled_by(name), expect=CANCELLED, attempts_nondeterministic=True)
 add("cancel.sigint_while_saving", "SIGINT during the search of a saving run cancels it: no recovery starts and nothing is written",
     args=("--prefix", "ffffffffffff", "--workers", "2", "--json", "--out", "{tmp}/o/id"), setup=setup_output,
-    interact=cancelled_by(signal.SIGINT), attempts_nondeterministic=True,
+    interact=cancelled_by("SIGINT"), attempts_nondeterministic=True,
     expect=Expectation(exit_code=130, files={}, stderr_excludes=(RECOVERY, "Discard armed"),
                        json={"status": "cancelled", "error": "context canceled"}))
 
