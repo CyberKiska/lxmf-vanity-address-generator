@@ -555,6 +555,10 @@ impl Generator {
 }
 
 /// Validated settings of a search, benchmark or dry run.
+#[expect(
+    dead_code,
+    reason = "the search and save paths (P2-03, P3-05) read the fields this build does not"
+)]
 pub(crate) struct RunConfig {
     /// Lowercase ASCII hex, at most 32 bytes, validated.
     pub prefix: Vec<u8>,

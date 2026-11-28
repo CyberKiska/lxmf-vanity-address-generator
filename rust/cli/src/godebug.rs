@@ -3,10 +3,6 @@
 //! Go reads `GODEBUG=fips140=...` before `main` runs. This build has no
 //! FIPS 140-3 validated module, so it honors an explicit request by refusing
 //! it, with Go's parsing and precedence rules.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by the console entry point (P1-09)")
-)]
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -14,6 +10,13 @@ use std::fmt;
 /// Exit status when the setting is unknown (a parse failure in Go).
 pub(crate) const EXIT_UNKNOWN: u8 = 2;
 /// Exit status when the setting is refused at run time (a failed self-test).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "`fail` returns 1 for every runtime failure; the constant documents the policy"
+    )
+)]
 pub(crate) const EXIT_REFUSED: u8 = 1;
 
 /// Value of the rightmost `fips140` key in `GODEBUG`.

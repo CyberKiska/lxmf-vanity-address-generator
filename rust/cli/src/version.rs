@@ -1,8 +1,4 @@
 //! Version text and build information.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by the console entry point (P1-09)")
-)]
 
 use std::sync::OnceLock;
 
@@ -63,6 +59,13 @@ const GOARCH: &str = match go_arch(std::env::consts::ARCH) {
 
 /// Build facts for the release bundles. The build script refuses every backend
 /// override, so the backends are always the defaults.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "printed by the release tooling, not by a command yet"
+    )
+)]
 pub(crate) fn build_info() -> &'static str {
     static INFO: OnceLock<String> = OnceLock::new();
     INFO.get_or_init(|| {
