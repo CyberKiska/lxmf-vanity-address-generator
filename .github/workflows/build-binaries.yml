@@ -146,7 +146,7 @@ jobs:
             awk '/^(FAIL|ERROR): / || /^(AssertionError|[A-Za-z.]*Error): / {print "::error::" $0}' python-tests.log
             exit 1
           fi
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: lxmf-vanity-${{ matrix.goos }}-${{ matrix.goarch }}
           path: artifact
@@ -168,7 +168,7 @@ jobs:
           grep -Fq 'X25519 public-key derivation unavailable' fips-only.log
           if grep -Eq 'panic:|fatal error:' fips-only.log; then cat fips-only.log; exit 1; fi
           GODEBUG=fips140=only artifact/lxmf-vanity-linux-amd64 --version
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: matrix.goos == 'darwin'
         with:
           name: lxmf-vanity-linux-amd64
@@ -330,7 +330,7 @@ jobs:
       attestations: write
     steps:
       # No checkout, downloaded executable, project script or dependency install.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: lxmf-vanity-*
           path: artifacts
@@ -359,7 +359,7 @@ jobs:
       contents: write
     steps:
       # Publication consumes this run's smoke-tested, attested bytes only.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: lxmf-vanity-*
           path: artifacts
