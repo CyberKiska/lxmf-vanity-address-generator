@@ -128,19 +128,35 @@ impl Dir {
     }
 
     pub(crate) fn create_exclusive(&self, name: &OsStr) -> io::Result<File> {
-        let name = Component::new(name)?;
+        let component = Component::new(name)?;
         // FILE_CREATE fails with STATUS_OBJECT_NAME_COLLISION when the name
         // exists in any form. FILE_OPEN_REPARSE_POINT makes a dangling or
         // valid link count as "exists" instead of being followed.
-        let handle = open_at(
+        let created = open_at(
             self.raw(),
-            &name,
+            &component,
             FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | FILE_READ_EA | SYNCHRONIZE,
             FILE_ATTRIBUTE_NORMAL,
             FILE_CREATE,
             CHILD_OPTIONS | FILE_NON_DIRECTORY_FILE,
-        )?;
-        Ok(File::from(handle))
+        );
+        match created {
+            Ok(handle) => Ok(File::from(handle)),
+            // Observed on native CI: creating a file over an existing
+            // directory or junction fails with access denied, not a collision
+            // (NT reports the directory before the collision). Access denied
+            // is also what a real permission problem looks like, so confirm
+            // with a no-follow lookup: if the name exists, it exists. A name
+            // that is absent keeps the original error.
+            Err(err) if err.raw_os_error() == i32::try_from(ERROR_ACCESS_DENIED).ok() => {
+                if self.lstat(name).is_ok() {
+                    Err(io::Error::new(io::ErrorKind::AlreadyExists, err))
+                } else {
+                    Err(err)
+                }
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub(crate) fn link_noreplace(&self, existing: &OsStr, new: &OsStr) -> io::Result<()> {
