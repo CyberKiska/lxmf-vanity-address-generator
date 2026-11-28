@@ -178,6 +178,7 @@ def refused(cid, description, args, error, *, setup=None, prefix_only=False, **k
     expect = dict(exit_code=1, files={}, json_keys=KEYS_FAILED,
                   json={"status": "failed", **QUIET, "notices": [], "attempts": 0, "generator": "segmented"})
     if prefix_only:  # the message after the prefix is operating-system text
+        error = error.replace("{sep}", os.sep)  # only {tmp} is normalized in output; the separator is real
         expect["check"] = lambda ctx, obs: ([] if obs.json["error"].startswith(error) else ["error text differs"])
         expect["stderr_regex"] = r"\AError: " + re.escape(error)
     else:
