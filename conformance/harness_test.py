@@ -519,6 +519,44 @@ class JsonTests(FakeBinaryTest):
             result = self.single(self.case([["out", jstr({"status": "ok", "version": bad})]], expect=expect))
             self.assertEqual(result.status, "FAIL")
 
+    def test_json_stdout_bytes_are_compared_with_only_the_top_level_version_value_masked(self):
+        def run(ref, cand, compare=("stdout_exact",)):
+            return self.differential(self.case(reference_script=[["out", ref]], candidate_script=[["out", cand]],
+                                               compare=frozenset(compare)))
+        same = run('{"status":"ok","version":"5bbe76e","n":1}\n', '{"status":"ok","version":"2.0.0-dev","n":1}\n')
+        self.assertEqual(same.status, "PASS", same.failures)
+        escaped = run('{"version":"a\\"b\\\\","n":1}\n', '{"version":"\\u0041","n":1}\n', ("stdout_exact", "stdout"))
+        self.assertEqual(escaped.status, "PASS", escaped.failures)
+        # Everything else stays byte-exact: escaping, spelling, spacing, key order.
+        for ref, cand in (('{"version":"a","p":"A"}\n', '{"version":"b","p":"\\u0041"}\n'),
+                          ('{"version":"a","n":1}\n', '{"version":"b","n":1.0}\n'),
+                          ('{"version":"a","n":1}\n', '{"version":"b", "n":1}\n'),
+                          ('{"version":"a","n":1}\n', '{"n":1,"version":"b"}\n'),
+                          ('{"version":"a","n":1}\n', '{"version":"a","n":1}'),
+                          ('{"version":"a","n":1}\n', '{"version":1,"n":1}\n')):
+            with self.subTest(ref=ref, cand=cand):
+                self.assertEqual(run(ref, cand).status, "FAIL")
+        other = run('{"version":"5bbe76e","p":"A"}\n', '{"version":"2.0.0-dev","p":"\\u0041"}\n')
+        self.assertIn("stdout bytes differ at offset 28", self.failures(other))  # right after {"version":"<version>","p":"
+        # A "version" that is not the top-level key does not count.
+        for ref, cand in (('{"x":{"version":"a"}}\n', '{"x":{"version":"b"}}\n'),
+                          ('{"x":"\\"version\\":\\"a\\""}\n', '{"x":"\\"version\\":\\"b\\""}\n'),
+                          ('{"x":[{"version":"a"}],"y":1}\n', '{"x":[{"version":"b"}],"y":1}\n'),
+                          ('{"version":"a","version":"c"}\n', '{"version":"b","version":"c"}\n'),
+                          ('version "a"\n', 'version "b"\n')):
+            with self.subTest(ref=ref, cand=cand):
+                self.assertEqual(run(ref, cand).status, "FAIL")
+        # The masked value does not hide a version nested next to a masked top-level one.
+        nested = run('{"version":"a","x":{"version":"a"}}\n', '{"version":"b","x":{"version":"b"}}\n')
+        self.assertEqual(nested.status, "FAIL")
+
+    def test_single_mode_stdout_keeps_the_version_bytes(self):
+        out = '{"version":"v1","n":1}\n'
+        case = self.case([["out", out]], expect=Expectation(stdout=out))
+        self.assertEqual(self.single(case).status, "PASS")
+        wrong = self.case([["out", out]], expect=Expectation(stdout=out.replace("v1", "v2")))
+        self.assertEqual(self.single(wrong).status, "FAIL")
+
     def test_missing_and_extra_keys_are_detected(self):
         ref, cand = [["out", '{"a":1}\n']], [["out", '{"a":1,"b":2}\n']]
         result = self.differential(self.case(reference_script=ref, candidate_script=cand, compare=frozenset({"json"})))

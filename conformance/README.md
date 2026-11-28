@@ -70,7 +70,7 @@ A case module in `conformance/cases/` exposes `CASES`, a list of `harness.Case`;
 
 ## Normalization
 
-Before comparison, `elapsed_seconds` (which must be a number of at least 0) and `version` are masked (a differing `version` text is only noted: both sides must carry a non-empty string); `attempts` is masked only for cases marked nondeterministic; identity fields are masked only for cases with random identities, but are always checked to be lowercase hex of the right length with `public_key` equal to `x25519_public + ed25519_public`. Temporary-directory prefixes become `{tmp}`. JSON must have the same keys in the same order; numbers compare by value (`0` equals `0.0`, with a note when the text differs).
+Before comparison, `elapsed_seconds` (which must be a number of at least 0) and `version` are masked (a differing `version` text is only noted: both sides must carry a non-empty string; when both print one JSON object, differential `stdout` and `stdout_exact` comparisons also leave out the bytes of that top-level value, and nothing else); `attempts` is masked only for cases marked nondeterministic; identity fields are masked only for cases with random identities, but are always checked to be lowercase hex of the right length with `public_key` equal to `x25519_public + ed25519_public`. Temporary-directory prefixes become `{tmp}`. JSON must have the same keys in the same order; numbers compare by value (`0` equals `0.0`, with a note when the text differs).
 
 ## Secret scanning
 
