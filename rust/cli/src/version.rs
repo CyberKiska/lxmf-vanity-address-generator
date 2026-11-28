@@ -1,8 +1,4 @@
 //! Version text and build information.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by the console entry point (P1-09)")
-)]
 
 use std::sync::OnceLock;
 
@@ -15,10 +11,10 @@ pub(crate) fn version_string() -> &'static str {
 }
 
 /// Port of version.go `versionText`. Go prints its toolchain (`go1.x.y`);
-/// this prints `rustc <version>` (`DEV-version-text`).
+/// this prints `rust<version>`, one token like `go1.27.4` (`DEV-version-text`).
 pub(crate) fn version_text() -> String {
     format!(
-        "lxmf-vanity {} (rustc {} {GOOS}/{GOARCH})\n",
+        "lxmf-vanity {} (rust{} {GOOS}/{GOARCH})\n",
         version_string(),
         env!("LXMF_VANITY_RUSTC_VERSION")
     )
@@ -63,6 +59,13 @@ const GOARCH: &str = match go_arch(std::env::consts::ARCH) {
 
 /// Build facts for the release bundles. The build script refuses every backend
 /// override, so the backends are always the defaults.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "printed by the release tooling, not by a command yet"
+    )
+)]
 pub(crate) fn build_info() -> &'static str {
     static INFO: OnceLock<String> = OnceLock::new();
     INFO.get_or_init(|| {
@@ -92,9 +95,13 @@ mod tests {
     #[test]
     fn version_text_names_program_version_compiler_and_target() {
         let text = version_text();
-        assert!(text.starts_with(&format!("lxmf-vanity {} (rustc ", version_string())));
+        assert!(text.starts_with(&format!("lxmf-vanity {} (rust", version_string())));
         assert!(text.ends_with(&format!(" {GOOS}/{GOARCH})\n")));
         assert_eq!(text.matches('\n').count(), 1);
+        // Like Go's `go1.27.4`: splitting on spaces gives program, version, "(<toolchain>", "<os>/<arch>)".
+        let fields: Vec<&str> = text.split_whitespace().collect();
+        assert_eq!(fields.len(), 4, "{text:?}");
+        assert!(fields[2].starts_with("(rust1."), "{text:?}");
     }
 
     // scripts/smoke_artifact.py: the version and "<goos>/<goarch>" must be present.

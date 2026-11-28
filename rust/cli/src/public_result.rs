@@ -35,6 +35,10 @@ pub(crate) struct PathBytes {
 impl PathBytes {
     /// `bytes` are `OsStr::as_encoded_bytes()` of the path; `windows` is
     /// `cfg!(windows)` for a real path.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "file lists arrive with the save path (P3-05)")
+    )]
     pub(crate) fn new(bytes: Vec<u8>, windows: bool) -> Self {
         PathBytes { bytes, windows }
     }

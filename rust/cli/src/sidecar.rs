@@ -18,7 +18,8 @@ use crate::goquote::quote_into;
 const PUBLIC_CAPACITY: usize = 1280;
 const PRIVATE_CAPACITY: usize = 512;
 
-const PUBLIC_ONLY_LINE: &[u8] = b"This metadata file contains public information only.\n";
+pub(crate) const PUBLIC_ONLY_LINE: &[u8] =
+    b"This metadata file contains public information only.\n";
 const WARNING_LINE: &[u8] = b"\nWARNING: Reversible private identity exports follow. Protect this file like the identity file.\n";
 const BASE64_LABEL_LINE: &[u8] = b"Reticulum URL-safe Base64 private identity:\n  ";
 const BASE32_LABEL_LINE: &[u8] = b"Reticulum Base32 private identity:\n  ";
