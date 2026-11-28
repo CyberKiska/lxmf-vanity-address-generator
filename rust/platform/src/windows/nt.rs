@@ -191,6 +191,11 @@ pub(super) struct NameInfo {
 }
 
 impl NameInfo {
+    #[cfg(test)]
+    pub(super) fn length(&self) -> u32 {
+        self.length
+    }
+
     /// Builds the structure shared by `FILE_LINK_INFORMATION` and
     /// `FILE_RENAME_INFORMATION`: flags/ReplaceIfExists (left zero, so "do not
     /// replace"), `RootDirectory = root`, `FileNameLength` in bytes, then the
@@ -199,15 +204,22 @@ impl NameInfo {
         use windows_sys::Wdk::Storage::FileSystem::FILE_LINK_INFORMATION as H;
         let name_offset = std::mem::offset_of!(H, FileName);
         let name_bytes = name.byte_len()?;
-        let total = name_offset
-            .checked_add(usize::from(name_bytes))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "name too long"))?;
+        // At least the whole structure: NT rejects a shorter buffer even
+        // when the name itself fits (see `name_info_len`).
+        let total = crate::namebuf::name_info_len(
+            std::mem::size_of::<H>(),
+            name_offset,
+            usize::from(name_bytes),
+        )
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "name too long"))?;
         let length = u32::try_from(total)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "name too long"))?;
         let mut words = vec![0u64; total.div_ceil(8)];
         let base = words.as_mut_ptr().cast::<u8>();
         // SAFETY: `words` is zeroed and `words.len() * 8 >= total` bytes long,
-        // aligned to 8. Each write below stays inside `total` bytes:
+        // aligned to 8; `total` is at least `size_of::<H>()` and at least
+        // `name_offset + name_bytes`. Each write below stays inside `total`
+        // bytes:
         // RootDirectory and FileNameLength are fields of H at their own
         // offsets (their alignment divides the offset because H is a repr(C)
         // struct and `base` is 8-aligned), and the name is written at

@@ -40,6 +40,13 @@ All child operations open `name` with `NtCreateFile` and `OBJECT_ATTRIBUTES { Ro
 | `stderr_is_char_device` | `GetStdHandle(STD_ERROR_HANDLE)`, `GetFileType == FILE_TYPE_CHAR` (console or `NUL`) | `ModeCharDevice` from `fileStat` | `S_ISCHR` |
 | `harden_process`, `effective_uid` | `Ok(())`, `None` | `harden_other.go` does nothing | rlimit, `prctl`, `geteuid` |
 
+### Sizes and statuses found by the first native run
+
+The first native CI run (x64 and arm64, same result) found two defects, fixed here:
+
+- **Link buffer length.** `FILE_LINK_INFORMATION` declares `FileName` as `[u16; 1]`. A one-character name made the buffer 22 bytes, below the 24-byte structure, and NT answered `STATUS_INFO_LENGTH_MISMATCH` (`ERROR_BAD_LENGTH`, 24). The buffer is now `max(size_of::<FILE_LINK_INFORMATION>(), offset_of!(FileName) + name_bytes)` (`namebuf.rs`, tested on every host).
+- **Create over a directory or junction.** `create_exclusive` on a name that is a directory or a junction failed with access denied (the kernel reports the directory before the collision), not `STATUS_OBJECT_NAME_COLLISION`. Go's `Openat` passes the same flags to the same call, so Go sees the same status as `EACCES`. This layer keeps the mapping narrow: only on `ERROR_ACCESS_DENIED` from the create, it does a no-follow `lstat` of the name; if the entry exists the result is `AlreadyExists` (original error as source), otherwise the original access-denied error is returned. A real permission problem on an absent name is therefore still `PermissionDenied`. Pinned by `create_exclusive_over_an_existing_directory_gives_already_exists` and `junction_is_reported_not_followed_and_removed_alone`.
+
 ### Names
 
 `lib.rs` rejects empty names, `.`, `..` and `\` or `/`. The Windows layer also rejects `:` (stream syntax), NUL, and a trailing `.` or space. NT matches names literally, but Win32 strips trailing dots and spaces and reads `:` as a stream separator, so a name accepted here could be shown at one path and opened at another. P1-09's `IsLocal` port must reject the same names first. Wildcards (`*`, `?`, `<`, `>`, `"`) are left to NT, which refuses them in an open or create. Short (8.3) aliases are not handled: creating `ABCDEF~1.TXT` while a long name owns that alias reports a collision.
@@ -98,24 +105,24 @@ Each primitive names a single component relative to a handle that the process ow
 
 ## `unsafe` blocks (for the specialist review)
 
-`unsafe` exists only in `rust/platform/src/windows/` (`#![allow(unsafe_code)]` with a reason in `mod.rs`). Every block has a `// SAFETY:` comment. Lines are those of the commit that adds this file.
+`unsafe` exists only in `rust/platform/src/windows/` (`#![allow(unsafe_code)]` with a reason in `mod.rs`). Every block has a `// SAFETY:` comment. Lines are those of the commit that last changed these files.
 
 | File:line | Call | What the comment has to establish |
 |---|---|---|
 | `nt.rs:31` | `RtlNtStatusToDosError` | plain integer in and out |
 | `nt.rs:138` | `NtCreateFile` | locals live across the call; `UNICODE_STRING.Length` is in bytes, without a terminator, checked to fit `u16` (`byte_len`); the kernel copies the name |
 | `nt.rs:158` | `OwnedHandle::from_raw_handle` | handle came from a successful create and is owned exactly once |
-| `nt.rs:216` | raw writes into `NameInfo` | zeroed 8-aligned `Vec<u64>` of at least `total` bytes; each write at a `offset_of!` offset inside it; name copy is `2 * units` bytes, equal to `FileNameLength` |
-| `nt.rs:254` | `NtSetInformationFile` | only called from two safe wrappers that pass a reference's memory and its exact size |
+| `nt.rs:228` | raw writes into `NameInfo` | zeroed 8-aligned `Vec<u64>` of at least `total` bytes, where `total` is at least the structure size and the end of the name; each write at a `offset_of!` offset inside it; name copy is `2 * units` bytes, equal to `FileNameLength` |
+| `nt.rs:266` | `NtSetInformationFile` | only called from two safe wrappers that pass a reference's memory and its exact size |
 | `meta.rs:33` | `GetFileInformationByHandle` | borrowed live handle, writable output struct |
 | `meta.rs:47` | `GetFileInformationByHandleEx` | exact struct size for `FileAttributeTagInfo` |
 | `meta.rs:125` | `GetFileType` | borrowed live handle |
 | `file.rs:39` | `SetFileInformationByHandle` | exact struct size for `FileBasicInfo`; buffer is only read |
 | `file.rs:63` | `GetStdHandle` | constant argument; result only compared, never closed |
 | `file.rs:69` | `GetFileType` | a stale or invalid handle yields `FILE_TYPE_UNKNOWN`, not undefined behavior |
-| `dir.rs:246` | `ReOpenFile` | live source handle, no pointers; result compared with `INVALID_HANDLE_VALUE` |
-| `dir.rs:259` | `OwnedHandle::from_raw_handle` | new valid handle, owned once |
-| `dir.rs:272` | `SetFileInformationByHandle` | exact struct size, buffer only read |
+| `dir.rs:262` | `ReOpenFile` | live source handle, no pointers; result compared with `INVALID_HANDLE_VALUE` |
+| `dir.rs:275` | `OwnedHandle::from_raw_handle` | new valid handle, owned once |
+| `dir.rs:288` | `SetFileInformationByHandle` | exact struct size, buffer only read |
 
 Handle ownership: every handle is an `OwnedHandle` (or a `File` built from one) immediately after creation, so it closes exactly once on every path, including error paths.
 

@@ -104,6 +104,17 @@ fn create_exclusive_twice_gives_already_exists() {
 }
 
 #[test]
+fn create_exclusive_over_an_existing_directory_gives_already_exists() {
+    let tmp = Tmp::new();
+    fs::create_dir(tmp.path().join("sub")).unwrap();
+    let dir = AnchoredDir::open(tmp.path()).unwrap();
+    assert_eq!(
+        kind(dir.create_exclusive(name("sub"))),
+        io::ErrorKind::AlreadyExists
+    );
+}
+
+#[test]
 fn create_exclusive_is_case_insensitive_on_default_ntfs() {
     // The default directory is case-insensitive, like Go's OBJ_CASE_INSENSITIVE.
     let tmp = Tmp::new();
