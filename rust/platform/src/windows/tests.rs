@@ -79,3 +79,18 @@ fn status_errors_map_through_the_system_table() {
         io::ErrorKind::NotFound
     );
 }
+
+#[test]
+fn name_info_buffer_covers_the_structure_for_short_and_long_names() {
+    use super::nt::{Component, NameInfo};
+    use windows_sys::Wdk::Storage::FileSystem::FILE_LINK_INFORMATION;
+    let min = std::mem::size_of::<FILE_LINK_INFORMATION>();
+    let offset = std::mem::offset_of!(FILE_LINK_INFORMATION, FileName);
+    for text in ["a", "ab", "abcdefghij", &"x".repeat(255)] {
+        let name = Component::new(OsStr::new(text)).unwrap();
+        let info = NameInfo::new(std::ptr::null_mut(), &name).unwrap();
+        let length = usize::try_from(info.length()).unwrap();
+        assert!(length >= min, "{} bytes for {text:?}", info.length());
+        assert!(length >= offset + 2 * text.len());
+    }
+}
