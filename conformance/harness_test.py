@@ -2,6 +2,7 @@
 
 import base64
 import contextlib
+import dataclasses
 import hashlib
 import io
 import json
@@ -441,7 +442,7 @@ class JsonTests(FakeBinaryTest):
         result = self.single(self.case(script, expect=Expectation(json={"status": "ok"})))
         self.assertEqual(result.status, "PASS")
         self.assertEqual(result.candidate.json["elapsed_seconds"], harness.MASK)
-        self.assertEqual(result.candidate.json["version"], harness.MASK)
+        self.assertEqual(result.candidate.json["version"], harness.MASK)  # masks are all equal
         for bad in ({"elapsed_seconds": -1}, {"elapsed_seconds": "1"}, {"version": ""}, {"version": 3}):
             with self.subTest(bad=bad):
                 result = self.single(self.case([["out", jstr({**base, **bad})]]))
@@ -484,6 +485,39 @@ class JsonTests(FakeBinaryTest):
         self.assertIn("key order differs", self.failures(result))
         same = self.differential(self.case(reference_script=ref, candidate_script=ref, compare=frozenset({"json"})))
         self.assertEqual(same.status, "PASS")
+
+    def test_a_different_json_version_passes_with_a_note_but_other_fields_still_fail(self):
+        def program(version, **more):
+            return [["out", jstr({"status": "ok", "version": version, **more})]]
+        compare = frozenset({"json"})
+        same = self.differential(self.case(reference_script=program("5bbe76e"),
+                                           candidate_script=program("2.0.0-dev"), compare=compare))
+        self.assertEqual(same.status, "PASS", same.failures)
+        self.assertIn("json $.version: version differs (5bbe76e vs 2.0.0-dev); only its presence is compared",
+                      "\n".join(same.notes))
+        equal = self.differential(self.case(reference_script=program("1"), candidate_script=program("1"),
+                                            compare=compare))
+        self.assertEqual((equal.status, equal.notes), ("PASS", []))
+        other = self.differential(self.case(reference_script=program("5bbe76e", note="a"),
+                                            candidate_script=program("2.0.0-dev", note="b"), compare=compare))
+        self.assertEqual(other.status, "FAIL")
+        self.assertIn("json $.note", self.failures(other))
+        self.assertNotIn("$.version", self.failures(other))
+        for bad in ("", 3, None):  # presence still matters on both sides
+            for side in ("reference_script", "candidate_script"):
+                with self.subTest(bad=bad, side=side):
+                    scripts = {"reference_script": program("5bbe76e"), "candidate_script": program("2.0.0-dev")}
+                    scripts[side] = program(bad)
+                    result = self.differential(self.case(compare=compare, **scripts))
+                    self.assertEqual(result.status, "FAIL")
+
+    def test_single_mode_still_masks_version_and_requires_a_non_empty_string(self):
+        expect = Expectation(json={"status": "ok"})
+        good = self.single(self.case([["out", jstr({"status": "ok", "version": "x"})]], expect=expect))
+        self.assertEqual((good.status, good.notes), ("PASS", []))
+        for bad in ("", 3):
+            result = self.single(self.case([["out", jstr({"status": "ok", "version": bad})]], expect=expect))
+            self.assertEqual(result.status, "FAIL")
 
     def test_missing_and_extra_keys_are_detected(self):
         ref, cand = [["out", '{"a":1}\n']], [["out", '{"a":1,"b":2}\n']]
@@ -797,6 +831,33 @@ class EntryPointTests(FakeBinaryTest):
         self.assertIn("summary: 2 cases", out)
         status, out, _ = self.main("--binary", self.binary(), "--cases", "unit.a1", "--cases", "unit.b1", cases=cases)
         self.assertIn("summary: 2 cases", out)
+
+    def test_tag_and_exclude_tag_filter_and_combine_with_case_globs(self):
+        def tagged(name, *tags):
+            return dataclasses.replace(self.passing(name), tags=frozenset(tags))
+        cases = [tagged("a", "slow"), tagged("b", "slow", "unix"), tagged("c", "unix"), tagged("d")]
+
+        def listed(*argv):
+            status, out, _ = self.main("--list", *argv, cases=cases)
+            return status, [line.split("\t")[0] for line in out.splitlines()]
+        self.assertEqual(listed("--exclude-tag", "slow"), (0, ["unit.c", "unit.d"]))
+        self.assertEqual(listed("--tag", "slow"), (0, ["unit.a", "unit.b"]))
+        self.assertEqual(listed("--tag", "slow", "--tag", "unix"), (0, ["unit.a", "unit.b", "unit.c"]))
+        self.assertEqual(listed("--exclude-tag", "slow", "--exclude-tag", "unix"), (0, ["unit.d"]))
+        self.assertEqual(listed("--tag", "slow", "--exclude-tag", "unix"), (0, ["unit.a"]))
+        self.assertEqual(listed("--tag", "slow", "--cases", "unit.b"), (0, ["unit.b"]))
+        self.assertEqual(listed("--tag", "none"), (0, []))
+        # The selection also drives a real run, and an empty selection is a usage error.
+        status, out, _ = self.main("--binary", self.binary(), "--exclude-tag", "slow", cases=cases)
+        self.assertEqual(status, 0)
+        self.assertIn("summary: 2 cases", out)
+        self.assertEqual(self.main("--binary", self.binary(), "--tag", "none", cases=cases)[0], 2)
+
+    def test_registered_slow_cases_are_selectable_and_the_rest_are_not_slow(self):
+        slow = run.select(load_cases(), run.parse_args(["--list", "--tag", "slow"]))
+        self.assertTrue(slow and all(c.id.startswith("signals_streams.") for c in slow))
+        rest = run.select(load_cases(), run.parse_args(["--list", "--exclude-tag", "slow"]))
+        self.assertEqual(len(slow) + len(rest), len(load_cases()))
 
     def test_differential_mode_prints_the_mode_and_compares(self):
         different = Case(id="unit.d", description="differs", expect=Expectation(exit_code=None),
