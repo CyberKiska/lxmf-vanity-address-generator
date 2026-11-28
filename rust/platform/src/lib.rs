@@ -14,6 +14,8 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
+#[cfg(any(windows, test))]
+mod namebuf;
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
