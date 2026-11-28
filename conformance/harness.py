@@ -931,6 +931,73 @@ def _cmp_lines(name, a, b, diffs):
             return
 
 
+def _version_span(data):
+    """Byte span of the string value of the one top-level "version" key of a JSON object, else None.
+
+    Scans the bytes (strings and nesting respected), so a "version" inside another value never counts."""
+    def string_end(i):  # i is at the opening quote
+        i += 1
+        while data[i] != 0x22:
+            i += 2 if data[i] == 0x5C else 1
+        return i + 1
+
+    def skip(i):
+        while data[i] in b" \t\r\n":
+            i += 1
+        return i
+
+    def value_end(i):
+        depth = 0
+        while True:
+            c = data[i]
+            if c == 0x22:
+                i = string_end(i)
+                continue
+            if c in b"{[":
+                depth += 1
+            elif c in b"}]":
+                if depth == 0:
+                    return i
+                depth -= 1
+            elif c == 0x2C and depth == 0:
+                return i
+            i += 1
+
+    spans = []
+    try:
+        i = skip(0)
+        if data[i] != 0x7B:
+            return None
+        i += 1
+        while True:
+            i = skip(i)
+            if data[i] == 0x7D:
+                break
+            key_end = string_end(i)
+            key = json.loads(data[i:key_end].decode("utf-8"))
+            i = skip(key_end)
+            if data[i] != 0x3A:
+                return None
+            start = skip(i + 1)
+            end = string_end(start) if data[start] == 0x22 else value_end(start)
+            if key == "version":
+                spans.append((start, end) if data[start] == 0x22 else None)
+            i = skip(end)
+            if data[i] == 0x7D:
+                break
+            if data[i] != 0x2C:
+                return None
+            i += 1
+    except (IndexError, ValueError):
+        return None
+    return spans[0] if len(spans) == 1 and spans[0] else None
+
+
+def _mask_version(data):
+    span = _version_span(data)
+    return data if span is None else data[:span[0]] + b'"<version>"' + data[span[1]:]
+
+
 def compare(case, ref, cand):
     """(differences, notes) between two normalized observations, for the fields in case.compare."""
     diffs, notes, fields = [], [], case.compare
@@ -941,12 +1008,16 @@ def compare(case, ref, cand):
             diffs.append("json: only one of the runs printed a single JSON object")
         elif ref.json is not None:
             _cmp_json(ref.json, cand.json, "$", diffs, notes)
-    if "stdout_exact" in fields and ref.stdout != cand.stdout:
-        offset = next((i for i, (x, y) in enumerate(zip(ref.stdout, cand.stdout)) if x != y),
-                      min(len(ref.stdout), len(cand.stdout)))
-        diffs.append(f"stdout bytes differ at offset {offset} (lengths {len(ref.stdout)} and {len(cand.stdout)})")
+    ref_out, cand_out = ref.stdout, cand.stdout
+    if ref.json is not None and cand.json is not None:
+        # Both printed one JSON object: only the value of its top-level version is not compared.
+        ref_out, cand_out = _mask_version(ref_out), _mask_version(cand_out)
+    if "stdout_exact" in fields and ref_out != cand_out:
+        offset = next((i for i, (x, y) in enumerate(zip(ref_out, cand_out)) if x != y),
+                      min(len(ref_out), len(cand_out)))
+        diffs.append(f"stdout bytes differ at offset {offset} (lengths {len(ref_out)} and {len(cand_out)})")
     if "stdout" in fields:
-        _cmp_lines("stdout", split_lines(ref.stdout), split_lines(cand.stdout), diffs)
+        _cmp_lines("stdout", split_lines(ref_out), split_lines(cand_out), diffs)
     if "stderr" in fields:
         _cmp_lines("stderr", ref.stderr_lines, cand.stderr_lines, diffs)
     if "stderr_markers" in fields:
